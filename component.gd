@@ -75,8 +75,9 @@ static func process_packet(type: ComponentType, packet_value: int, board_referen
 			result *= 2
 		
 		ComponentType.LOOP:
-			# Loop lässt Paket 2x durch denselben Bauteil laufen
-			result *= 2
+			# Loop: Wendet CPU-Effekt 2x an (addiert 2x+5) 
+			# Simuliert: Paket durchläuft 2x einen CPU-ähnlichen Boost
+			result += 10  # 2 * +5 (wie 2 CPU-Durchläufe)
 		
 		ComponentType.NPU:
 			# NPU: +3 pro benachbarter CPU

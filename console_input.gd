@@ -1,5 +1,6 @@
 # Circuit Breaker - Konsolen-Eingabe
 # Ein Node, der Tastatureingaben abfängt und an den GameManager weiterleitet.
+# Verwendet Keycode-Vergleiche statt Unicode/String-Funktionen für Kompatibilität.
 
 extends Node
 
@@ -46,13 +47,17 @@ func _unhandled_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			return
 		
-		# Normale Zeichen über Unicode
-		if event.unicode > 0:
-			var char_str = String.chr(event.unicode)
-			# Nur druckbare Zeichen: Buchstaben, Zahlen
-			if (char_str >= "a" and char_str <= "z") or \
-			   (char_str >= "A" and char_str <= "Z") or \
-			   (char_str >= "0" and char_str <= "9"):
-				input_buffer += char_str
-				get_viewport().set_input_as_handled()
-				return
+		# Buchstaben A-Z
+		if keycode >= KEY_A and keycode <= KEY_Z:
+			if event.shift_pressed:
+				input_buffer += char(keycode)
+			else:
+				input_buffer += char(keycode + 32)  # lowercase
+			get_viewport().set_input_as_handled()
+			return
+		
+		# Zahlen 0-9
+		if keycode >= KEY_0 and keycode <= KEY_9:
+			input_buffer += char(keycode)
+			get_viewport().set_input_as_handled()
+			return

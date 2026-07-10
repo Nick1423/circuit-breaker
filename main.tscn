@@ -3,6 +3,8 @@
 [ext_resource type="Script" path="res://board.gd" id="1_4b38k"]
 [ext_resource type="Script" path="res://game_manager.gd" id="2_4b38k"]
 [ext_resource type="Script" path="res://console_input.gd" id="3_4b38k"]
+[ext_resource type="Script" path="res://ui_board.gd" id="4_4b38k"]
+[ext_resource type="Script" path="res://ui_manager.gd" id="5_4b38k"]
 
 [node name="Main" type="Node"]
 
@@ -11,6 +13,18 @@ script = ExtResource("1_4b38k")
 
 [node name="GameManager" type="Node" parent="."]
 script = ExtResource("2_4b38k")
+
+[node name="UIManager" type="Control" parent="."]
+layout_mode = 0
+offset_right = 800.0
+offset_bottom = 600.0
+script = ExtResource("5_4b38k")
+
+[node name="UIBoard" type="Control" parent="."]
+layout_mode = 0
+offset_right = 600.0
+offset_bottom = 500.0
+script = ExtResource("4_4b38k")
 
 [node name="ConsoleInput" type="Node" parent="."]
 script = ExtResource("3_4b38k")

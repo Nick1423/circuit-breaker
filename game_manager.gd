@@ -8,10 +8,10 @@ const Firewall = preload("res://firewall.gd")
 const Packet = preload("res://packet.gd")
 const GameShop = preload("res://shop.gd")
 const Shop = GameShop
+const Inventory = preload("res://inventory.gd")
 
 # Node-Referenzen
 @onready var board: Node2D = $"../Board"
-@onready var ui_manager = $"../UIManager"
 
 # Spiel-Zustand
 enum GamePhase { HOMESCREEN, BUILD, SEND, RESULT, SHOP, GAMEOVER }
@@ -27,8 +27,9 @@ var base_watt_budget: int = 10
 # Firewall der aktuellen Runde
 var firewall: Firewall = null
 
-# Shop
+# Shop & Inventar
 var shop: Shop = null
+var inventory: Inventory = null
 
 # Aktuell ausgewählter Bauteil-Typ
 var selected_component: Component.ComponentType = Component.ComponentType.CPU
@@ -47,7 +48,19 @@ var stats = {
 func _ready() -> void:
 	randomize()
 	shop = Shop.new()
+	inventory = Inventory.new()
+	_redraw_ui()
 	show_homescreen()
+
+
+# Hilfsfunktion: UI neu zeichnen
+func _redraw_ui() -> void:
+	var ui_board = $"../UIBoard"
+	if ui_board:
+		ui_board.queue_redraw()
+	var ui_mgr = $"../UIManager"
+	if ui_mgr:
+		ui_mgr.queue_redraw()
 
 
 # =============================================
@@ -56,17 +69,13 @@ func _ready() -> void:
 
 func show_homescreen() -> void:
 	phase = GamePhase.HOMESCREEN
+	_redraw_ui()
 	print("========================================")
 	print("     CIRCUIT BREAKER")
 	print("  Ein Hacker-Platinen-Puzzle")
 	print("========================================")
 	print()
-	print("Baue deine Platine, verstärke Datenpakete,")
-	print("und knacke die Firewall!")
-	print()
-	print("Befehle: help")
-	print("         start - Spiel beginnen")
-	print("         quit  - Beenden")
+	print("Befehle: help, start, quit")
 	print()
 
 
@@ -79,22 +88,16 @@ func start_new_run() -> void:
 	score = 0
 	current_round = 0
 	stats = {
-		"total_damage": 0,
-		"firewalls_destroyed": 0,
-		"components_placed": 0,
-		"components_bought": 0,
-		"packets_sent": 0,
-		"best_single_packet": 0
+		"total_damage": 0, "firewalls_destroyed": 0,
+		"components_placed": 0, "components_bought": 0,
+		"packets_sent": 0, "best_single_packet": 0
 	}
-	
+	inventory = Inventory.new()
 	board.watt_budget = base_watt_budget
 	board.clear_board()
-	
 	print("=== NEUER RUN GESTARTET ===")
-	print("Start-Geld: ", money)
-	print("Watt-Budget: ", board.watt_budget)
+	print("Start-Geld: ", money, " | Watt-Budget: ", board.watt_budget)
 	print()
-	
 	start_round()
 
 
@@ -107,29 +110,20 @@ func start_round() -> void:
 	firewall = Firewall.new(current_round)
 	phase = GamePhase.BUILD
 	
-	# Geld-Belohnung für neue Runde
 	var round_bonus = 2 + current_round
 	money += round_bonus
-	
-	# Watt-Budget erhöhen
 	board.watt_budget = base_watt_budget + (current_round - 1) * 2
 	
-	print("========================================")
-	print("  RUNDE ", current_round)
-	print("========================================")
+	print("=== RUNDE ", current_round, " ===")
 	print(firewall.get_status())
 	print("Budget: ", board.watt_budget, "W | Geld: ", money)
-	print("Pakete/Runde: ", firewall.packets_per_round)
-	print()
-	print("Platziere Bauteile (help für Befehle)")
-	print("Dann: send - Pakete losschicken")
-	print()
 	board.print_board()
-	print("Ausgewählt: ", Component.get_type_name(selected_component), " (", Component.get_watt_cost(selected_component), "W)")
+	
+	_redraw_ui()
 
 
 # =============================================
-#  PAKETE SENDEN (Phase: BUILD -> SEND -> RESULT)
+#  PAKETE SENDEN
 # =============================================
 
 func send_all_packets() -> void:
@@ -138,115 +132,72 @@ func send_all_packets() -> void:
 		return
 	
 	phase = GamePhase.SEND
+	_redraw_ui()
 	
 	print("=== PAKETE WERDEN GESENDET ===")
-	
 	var total_damage = 0
-	var packets_to_send = firewall.packets_per_round
 	
-	for i in range(packets_to_send):
+	for i in range(firewall.packets_per_round):
 		var row = i % board.BOARD_HEIGHT
-		print("\n--- Paket ", i + 1, "/", packets_to_send, " (Zeile ", row, ") ---")
 		var damage = _send_single_packet(row)
 		total_damage += damage
 	
 	phase = GamePhase.RESULT
-	
-	print("\n=== RUNDEN-ERGEBNIS ===")
 	print("Gesamtschaden: ", total_damage)
-	
-	# Score gutschreiben
 	score += total_damage
 	stats.total_damage += total_damage
 	
-	# Prüfen, ob Firewall zerstört wurde
 	if not firewall.is_alive():
-		_on_firewall_destroyed()
+		print("*** FIREWALL ZERSTÖRT! ***")
+		stats.firewalls_destroyed += 1
+		money += firewall.reward_watt
+		_redraw_ui()
+		start_shop_phase()
 	else:
-		print("\nFirewall steht noch! (", firewall.health, "/", firewall.max_health, " HP)")
-		print("Du hast nicht genug Schaden gemacht.")
+		print("Firewall steht noch! (", firewall.health, "/", firewall.max_health, " HP)")
 		show_game_over()
 
 
 func _send_single_packet(row: int) -> int:
-	var packet_value = 1  # Startwert
-	
+	var value = 1
 	for col in range(board.BOARD_WIDTH):
-		var component = board.board[row][col]
-		if component != null:
-			var before = packet_value
-			packet_value = Component.process_packet(component, packet_value, board, row, col)
-			print("  [", col, "] ", Component.get_type_name(component), ": ", before, " -> ", packet_value)
-	
-	firewall.take_damage(packet_value)
+		var comp = board.board[row][col]
+		if comp != null:
+			value = Component.process_packet(comp, value, board, row, col)
+	firewall.take_damage(value)
 	stats.packets_sent += 1
-	if packet_value > stats.best_single_packet:
-		stats.best_single_packet = packet_value
-	
-	print("  => Paket-Wert: ", packet_value)
-	return packet_value
+	if value > stats.best_single_packet:
+		stats.best_single_packet = value
+	print("  Zeile ", row, ": ", value, " Schaden")
+	return value
 
 
 # =============================================
-#  FIREWALL ZERSTÖRT -> SHOP
-# =============================================
-
-func _on_firewall_destroyed() -> void:
-	print("\n*** FIREWALL ZERSTÖRT! ***")
-	stats.firewalls_destroyed += 1
-	
-	# Belohnung
-	var reward = firewall.reward_watt
-	money += reward
-	print("Belohnung: +", reward, " Geld")
-	print("Geld: ", money)
-	print("Score: ", score)
-	print()
-	
-	# Shop öffnen
-	start_shop_phase()
-
-
-# =============================================
-#  SHOP-PHASE
+#  SHOP
 # =============================================
 
 func start_shop_phase() -> void:
 	phase = GamePhase.SHOP
 	shop.generate_offerings(current_round)
-	
-	print("========== SHOP (Runde ", current_round, ") ==========")
+	_redraw_ui()
+	print("========== SHOP ==========")
 	print("Geld: ", money)
-	print()
 	shop.print_shop()
-	print()
-	print("buy <nr> - Kaufen")
-	print("next     - Nächste Runde")
-	print()
 
 
 func buy_component(index: int) -> void:
 	if phase != GamePhase.SHOP:
 		print("Shop ist nicht geöffnet!")
 		return
-	
 	var result = shop.buy(index, money)
-	
 	if result.success:
 		money -= result.price
 		stats.components_bought += 1
+		inventory.add_item(result.component_type)
 		print("Gekauft: ", result.name, " für ", result.price, " Geld")
-		
-		# Bauteil auf erstes freies Feld setzen (oder in Inventar)
-		var positions = board.get_available_positions()
-		if positions.size() > 0:
-			var pos = positions[0]
-			board.place_component(pos.col, pos.row, result.component_type)
-			board.print_board()
-		else:
-			print("Kein freier Platz auf dem Brett!")
 	else:
-		print("Kauf fehlgeschlagen: ", result.reason)
+		print("Fehler: ", result.reason)
+	_redraw_ui()
 
 
 # =============================================
@@ -255,33 +206,23 @@ func buy_component(index: int) -> void:
 
 func show_game_over() -> void:
 	phase = GamePhase.GAMEOVER
-	
 	if score > highscore:
 		highscore = score
-		print("*** NEUER HIGHSCORE: ", highscore, " ***")
-	
+		print("NEUER HIGHSCORE: ", highscore)
 	print("\n=== GAME OVER ===")
-	print("Runde: ", current_round)
-	print("Score: ", score)
-	print("Highscore: ", highscore)
-	print("Geld: ", money)
-	print("Firewalls geknackt: ", stats.firewalls_destroyed)
-	print("Bester Paket-Wert: ", stats.best_single_packet)
-	print()
-	print("restart - Neustart")
-	print("menu    - Hauptmenü")
-	print()
+	print("Runde: ", current_round, " | Score: ", score)
+	print("restart - Neustart | menu - Hauptmenü")
+	_redraw_ui()
 
 
 # =============================================
-#  BEFEHL
+#  BEFEHLE
 # =============================================
 
 func handle_command(text: String) -> void:
 	var parts = text.strip_edges().split(" ", false)
 	if parts.size() == 0:
 		return
-	
 	var cmd = parts[0].to_lower()
 	
 	match cmd:
@@ -296,11 +237,12 @@ func handle_command(text: String) -> void:
 			_cmd_remove(parts)
 		"select", "s":
 			_cmd_select(parts)
+		"invuse", "i":
+			_cmd_invuse(parts)
+		"inv":
+			inventory.print_inventory()
 		"send":
 			send_all_packets()
-		"shop":
-			if phase == GamePhase.RESULT:
-				start_shop_phase()
 		"buy", "b":
 			if parts.size() >= 2:
 				buy_component(int(parts[1]))
@@ -310,11 +252,10 @@ func handle_command(text: String) -> void:
 		"board":
 			board.print_board()
 		"status":
-			print("Runde: ", current_round, " | Phase: ", phase)
-			print("Geld: ", money, " | Score: ", score, " | Highscore: ", highscore)
-			print("Ausgewählt: ", Component.get_type_name(selected_component))
+			_cmd_status()
 		"clear":
 			board.clear_board()
+			_redraw_ui()
 		"restart":
 			start_new_run()
 		"menu":
@@ -329,86 +270,94 @@ func handle_command(text: String) -> void:
 func _show_help() -> void:
 	match phase:
 		GamePhase.HOMESCREEN:
-			print("Befehle: start, quit")
+			print("start, quit")
 		GamePhase.BUILD:
-			print("========== BAU-PHASE ==========")
-			print("place CPU 0 0     - Bauteil setzen")
-			print("remove 0 0        - Bauteil entfernen")
-			print("select GPU        - Bauteil auswählen")
-			print("send              - Pakete senden")
-			print("board             - Brett anzeigen")
-			print("status            - Spielstatus")
-			print("clear             - Brett leeren")
-			print("================================")
+			print("place CPU 0 0 | remove 0 0 | select GPU")
+			print("invuse 0 1 1 | inv | send | board | clear")
 		GamePhase.SHOP:
-			print("========== SHOP ==========")
-			print("buy <nr>          - Kaufen")
-			print("next              - Nächste Runde")
-			print("===========================")
+			print("buy <nr> | next | inv")
 		GamePhase.GAMEOVER:
-			print("Befehle: restart, menu")
+			print("restart, menu")
 		_:
-			print("Befehle: help, status, board")
+			print("help, status, board")
 
 
 func _cmd_place(parts: Array) -> void:
 	if phase != GamePhase.BUILD:
-		print("Du kannst nur in der Bau-Phase platzieren!")
+		print("Nur in Bau-Phase!")
 		return
-	
 	if parts.size() < 4:
 		print("Usage: place <TYP> <x> <y>")
 		return
 	
-	var type_str = parts[1].to_upper()
-	var col = int(parts[2])
-	var row = int(parts[3])
-	
 	var type_map = {
-		"CPU": Component.ComponentType.CPU,
-		"GPU": Component.ComponentType.GPU,
-		"LOOP": Component.ComponentType.LOOP,
-		"TRACE": Component.ComponentType.TRACE,
+		"CPU": Component.ComponentType.CPU, "GPU": Component.ComponentType.GPU,
+		"LOOP": Component.ComponentType.LOOP, "TRACE": Component.ComponentType.TRACE,
 		"NPU": Component.ComponentType.NPU
 	}
-	
-	if not type_map.has(type_str):
-		print("Unbekannter Typ: ", type_str)
+	var t = parts[1].to_upper()
+	if not type_map.has(t):
+		print("Unbekannter Typ: ", parts[1])
 		return
 	
-	var success = board.place_component(col, row, type_map[type_str])
-	if success:
+	var ok = board.place_component(int(parts[2]), int(parts[3]), type_map[t])
+	if ok:
 		stats.components_placed += 1
+	_redraw_ui()
 
 
 func _cmd_remove(parts: Array) -> void:
 	if phase != GamePhase.BUILD:
-		print("Du kannst nur in der Bau-Phase entfernen!")
+		print("Nur in Bau-Phase!")
 		return
-	
 	if parts.size() < 3:
 		print("Usage: remove <x> <y>")
 		return
-	
 	board.remove_component(int(parts[1]), int(parts[2]))
+	_redraw_ui()
 
 
 func _cmd_select(parts: Array) -> void:
 	if parts.size() < 2:
 		print("Aktuell: ", Component.get_type_name(selected_component))
 		return
-	
 	var type_map = {
-		"CPU": Component.ComponentType.CPU,
-		"GPU": Component.ComponentType.GPU,
-		"LOOP": Component.ComponentType.LOOP,
-		"TRACE": Component.ComponentType.TRACE,
+		"CPU": Component.ComponentType.CPU, "GPU": Component.ComponentType.GPU,
+		"LOOP": Component.ComponentType.LOOP, "TRACE": Component.ComponentType.TRACE,
 		"NPU": Component.ComponentType.NPU
 	}
-	
 	var key = parts[1].to_upper()
 	if type_map.has(key):
 		selected_component = type_map[key]
-		print("Ausgewählt: ", Component.get_type_name(selected_component), " (", Component.get_watt_cost(selected_component), "W)")
-	else:
-		print("Unbekannter Typ: ", parts[1])
+		print("Ausgewählt: ", Component.get_type_name(selected_component))
+	_redraw_ui()
+
+
+func _cmd_invuse(parts: Array) -> void:
+	if phase != GamePhase.BUILD:
+		print("Nur in Bau-Phase!")
+		return
+	if parts.size() < 4:
+		print("Usage: invuse <inv_idx> <x> <y>")
+		return
+	
+	var idx = int(parts[1])
+	var ct = inventory.peek_item(idx)
+	if ct == -1:
+		print("Ungültiger Index!")
+		return
+	
+	var ok = board.place_component(int(parts[2]), int(parts[3]), ct)
+	if ok:
+		inventory.take_item(idx)
+		stats.components_placed += 1
+	_redraw_ui()
+
+
+func _cmd_status() -> void:
+	print("Runde: ", current_round, " | Geld: ", money, " | Score: ", score)
+	print("Watt: ", board.get_used_watt(), "/", board.watt_budget)
+	print("Ausgewählt: ", Component.get_type_name(selected_component))
+	print("Inventar: ", inventory.get_item_count(), "/", inventory.max_size)
+	if firewall:
+		print(firewall.get_status())
