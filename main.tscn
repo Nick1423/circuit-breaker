@@ -1,6 +1,16 @@
 [gd_scene format=3 uid="uid://dlgqj34riryar"]
 
 [ext_resource type="Script" path="res://board.gd" id="1_4b38k"]
+[ext_resource type="Script" path="res://game_manager.gd" id="2_4b38k"]
+[ext_resource type="Script" path="res://console_input.gd" id="3_4b38k"]
 
-[node name="Main" type="Node2D" unique_id=1831302197]
+[node name="Main" type="Node"]
+
+[node name="Board" type="Node2D" parent="."]
 script = ExtResource("1_4b38k")
+
+[node name="GameManager" type="Node" parent="."]
+script = ExtResource("2_4b38k")
+
+[node name="ConsoleInput" type="Node" parent="."]
+script = ExtResource("3_4b38k")
