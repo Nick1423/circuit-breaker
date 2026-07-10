@@ -1,0 +1,22 @@
+# Godot 4+ specific ignores
+.godot/
+/android/
+
+# Export files
+/export/
+
+# Imported assets (generated files)
+*.import
+
+# OS generated files
+Thumbs.db
+.DS_Store
+
+# Godot user settings
+*.godot.user
+
+# Test output
+godot_test_output.txt
+
+# VS Code settings (personal)
+.vscode/
