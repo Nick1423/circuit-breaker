@@ -23,6 +23,9 @@ var highscore: int = 0
 var current_round: int = 0
 var base_watt_budget: int = 10
 
+# Kurze Rückmeldung für die UI (Ergebnis, Kauf, Fehler)
+var ui_message: String = ""
+
 # Firewall der aktuellen Runde
 var firewall: Firewall = null
 
@@ -54,12 +57,9 @@ func _ready() -> void:
 
 # Hilfsfunktion: UI neu zeichnen
 func _redraw_ui() -> void:
-	var ui_board = $"../UIBoard"
-	if ui_board:
-		ui_board.queue_redraw()
-	var ui_mgr = $"../UIManager"
-	if ui_mgr:
-		ui_mgr.queue_redraw()
+	var ui = get_node_or_null("../UI")
+	if ui and ui.has_method("refresh"):
+		ui.refresh()
 
 
 # =============================================
@@ -112,6 +112,7 @@ func start_round() -> void:
 	var round_bonus = 2 + current_round
 	money += round_bonus
 	board.watt_budget = base_watt_budget + (current_round - 1) * 2
+	ui_message = "Runde %d — platziere Bauteile und sende die Pakete." % current_round
 	
 	print("=== RUNDE ", current_round, " ===")
 	print(firewall.get_status())
@@ -178,9 +179,11 @@ func send_all_packets() -> void:
 		print("*** FIREWALL ZERSTÖRT! ***")
 		stats.firewalls_destroyed += 1
 		money += firewall.reward_watt
+		ui_message = "Firewall zerstört! %d Schaden  •  +%d Geld" % [total_damage, firewall.reward_watt]
 		_redraw_ui()
 		start_shop_phase()
 	else:
+		ui_message = "Nur %d Schaden — Firewall hält (%d/%d HP)." % [total_damage, firewall.health, firewall.max_health]
 		print("Firewall steht noch! (", firewall.health, "/", firewall.max_health, " HP)")
 		show_game_over()
 
@@ -213,8 +216,10 @@ func buy_component(index: int) -> void:
 		money -= result.price
 		stats.components_bought += 1
 		inventory.add_item(result.component_type)
+		ui_message = "Gekauft: %s für %d Geld." % [result.name, result.price]
 		print("Gekauft: ", result.name, " für ", result.price, " Geld")
 	else:
+		ui_message = "Kauf fehlgeschlagen: %s" % result.reason
 		print("Fehler: ", result.reason)
 	_redraw_ui()
 
