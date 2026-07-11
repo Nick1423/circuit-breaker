@@ -8,8 +8,8 @@ const Component = preload("res://component.gd")
 # Inventar: Liste von ComponentType-Werten
 var items: Array = []
 
-# Maximale Inventar-Größe
-var max_size: int = 10
+# Maximale Inventar-Größe (Board hat 24 Felder)
+var max_size: int = 24
 
 
 func _init() -> void:

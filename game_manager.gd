@@ -83,21 +83,21 @@ func show_homescreen() -> void:
 # =============================================
 
 func start_new_run() -> void:
-	money = 5
+	money = 12
 	score = 0
 	current_round = 0
+	firewall = null
 	stats = {
 		"total_damage": 0, "firewalls_destroyed": 0,
 		"components_placed": 0, "components_bought": 0,
 		"packets_sent": 0, "best_single_packet": 0
 	}
 	inventory = Inventory.new()
-	board.watt_budget = base_watt_budget
 	board.clear_board()
-	print("=== NEUER RUN GESTARTET ===")
-	print("Start-Geld: ", money, " | Watt-Budget: ", board.watt_budget)
-	print()
-	start_round()
+	print("=== NEUER RUN GESTARTET === Start-Geld: ", money)
+	ui_message = "Kaufe erst ein paar Bausteine, dann starte Runde 1."
+	# Run beginnt im Shop: erst Bausteine kaufen, dann 'Nächste Runde'.
+	start_shop_phase()
 
 
 # =============================================
@@ -126,72 +126,90 @@ func start_round() -> void:
 #  PAKETE SENDEN
 # =============================================
 
-func send_all_packets() -> void:
+# Berechnet den kompletten Sende-Vorgang OHNE Zustandsänderung.
+# Wird von der UI genutzt, um zuerst die Animation zu zeigen und danach
+# via apply_send() den Schaden anzuwenden. Gibt ein Ergebnis-Dictionary zurück.
+func compute_send() -> Dictionary:
+	var path_result = board.simulate_path()
+	var per_packet = int(path_result.value)
+
+	# Durchbruch-Bonus: Paket erreicht den rechten Rand -> +50%
+	if path_result.reached_end:
+		per_packet = int(ceil(per_packet * 1.5))
+
+	# Schild-Modifikator: Schaden pro Paket gedeckelt
+	if firewall and firewall.packet_damage_cap > 0:
+		per_packet = min(per_packet, firewall.packet_damage_cap)
+
+	var packets = firewall.packets_per_round if firewall else 1
+	var raw = per_packet * packets
+
+	# Überhitzung
+	var heat = board.get_total_heat()
+	var hlimit = firewall.heat_limit if firewall else 999
+	var overheated = heat > hlimit
+	var total = raw
+	if overheated:
+		var penalty = clampf(float(hlimit) / float(max(1, heat)), 0.3, 1.0)
+		penalty = clampf(1.0 - (1.0 - penalty) * (firewall.overheat_factor if firewall else 1.0), 0.15, 1.0)
+		total = int(raw * penalty)
+
+	return {
+		"path": path_result.path,
+		"path_value": int(path_result.value),
+		"reached_end": bool(path_result.reached_end),
+		"path_error": String(path_result.error),
+		"per_packet": per_packet,
+		"packets": packets,
+		"raw": raw,
+		"heat": heat,
+		"heat_limit": hlimit,
+		"overheated": overheated,
+		"total_damage": total,
+	}
+
+
+# Wendet ein zuvor berechnetes Sende-Ergebnis an: Schaden, Score, Phasenwechsel.
+func apply_send(res: Dictionary) -> void:
 	if phase != GamePhase.BUILD:
-		print("Du bist nicht in der Bau-Phase!")
 		return
-	
+	if firewall == null:
+		push_warning("apply_send ohne Firewall")
+		return
+
 	phase = GamePhase.SEND
-	_redraw_ui()
-
-	print("=== PAKETE WERDEN GESENDET ===")
-	var raw_total = 0
-
-	for i in range(firewall.packets_per_round):
-		var row = i % board.BOARD_HEIGHT
-		var value = _send_single_packet(row)
-
-		# Modifikator: Störsender -> tote Zeile zählt nicht
-		if firewall.dead_row == row:
-			print("  Zeile ", row, ": BLOCKIERT (Störsender) -> 0")
-			continue
-
-		# Modifikator: Schild -> Schaden pro Paket gedeckelt
-		if firewall.packet_damage_cap > 0 and value > firewall.packet_damage_cap:
-			print("  Zeile ", row, ": ", value, " -> gedeckelt auf ", firewall.packet_damage_cap)
-			value = firewall.packet_damage_cap
-		else:
-			print("  Zeile ", row, ": ", value, " Schaden")
-
-		raw_total += value
-		stats.packets_sent += 1
-		if value > stats.best_single_packet:
-			stats.best_single_packet = value
-
-	# Überhitzung: Malus auf den Gesamtschaden
-	var total_heat = board.get_total_heat()
-	var total_damage = raw_total
-	if total_heat > firewall.heat_limit:
-		var penalty = clampf(float(firewall.heat_limit) / float(total_heat), 0.3, 1.0)
-		# Brandmelder-Modifikator verstärkt den Verlust
-		penalty = clampf(1.0 - (1.0 - penalty) * firewall.overheat_factor, 0.15, 1.0)
-		total_damage = int(raw_total * penalty)
-		print("!! ÜBERHITZUNG !! Hitze ", total_heat, "/", firewall.heat_limit, " -> Schaden x%.2f" % penalty)
-
+	var total_damage = int(res.get("total_damage", 0))
 	firewall.take_damage(total_damage)
-
-	phase = GamePhase.RESULT
-	print("Gesamtschaden: ", total_damage)
 	score += total_damage
 	stats.total_damage += total_damage
+	stats.packets_sent += int(res.get("packets", 0))
+	var per_packet = int(res.get("per_packet", 0))
+	if per_packet > stats.best_single_packet:
+		stats.best_single_packet = per_packet
+
+	var note = ""
+	if res.get("reached_end", false):
+		note = "  (Durchbruch +50%)"
+	elif String(res.get("path_error", "")) != "":
+		note = "  [%s]" % res.get("path_error")
+	if res.get("overheated", false):
+		note += "  (überhitzt!)"
 
 	if not firewall.is_alive():
-		print("*** FIREWALL ZERSTÖRT! ***")
 		stats.firewalls_destroyed += 1
 		money += firewall.reward_watt
-		ui_message = "Firewall zerstört! %d Schaden  •  +%d Geld" % [total_damage, firewall.reward_watt]
-		_redraw_ui()
+		ui_message = "Firewall zerstört! %d Schaden%s  •  +%d Geld" % [total_damage, note, firewall.reward_watt]
 		start_shop_phase()
 	else:
-		ui_message = "Nur %d Schaden — Firewall hält (%d/%d HP)." % [total_damage, firewall.health, firewall.max_health]
-		print("Firewall steht noch! (", firewall.health, "/", firewall.max_health, " HP)")
+		ui_message = "Nur %d Schaden%s — Firewall hält (%d/%d HP)." % [total_damage, note, firewall.health, firewall.max_health]
 		show_game_over()
 
 
-# Berechnet den rohen Paketwert einer Zeile (inkl. LOOP-Wiederholung und
-# Nachbar-Synergien). Schaden/Modifikatoren werden in send_all_packets angewandt.
-func _send_single_packet(row: int) -> int:
-	return board.simulate_packet_flow(row)
+# Bequemer Fallback ohne Animation (führt Berechnung + Anwendung sofort aus).
+func send_all_packets() -> void:
+	if phase != GamePhase.BUILD:
+		return
+	apply_send(compute_send())
 
 
 # =============================================

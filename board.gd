@@ -1,183 +1,213 @@
 extends Node2D
 
 const Component = preload("res://component.gd")
+const Block = preload("res://block.gd")
 
 # Circuit Breaker - Spielfeld (Board)
-# Das Brett ist 6x4. Jede Zelle kann ein Bauteil (ComponentType) oder null (leer) enthalten.
+# 6x4-Raster. Jede Zelle enthält einen Block (mit Ein-/Ausgang) oder null.
+# Pakete betreten das Board am linken Rand und suchen sich über die Ports
+# ihren Weg nach rechts (siehe simulate_path()).
 
-# Das Spielbrett als 2D-Array
-# board[Zeile][Spalte] = null (leer) oder ComponentType
-# Zeilen: 0 (oben) bis 3 (unten)
-# Spalten: 0 (links) bis 5 (rechts)
+# board[Zeile][Spalte] = Block oder null
 var board: Array = []
 
-# Breite (Spalten) und Höhe (Zeilen) des Bretts
 const BOARD_WIDTH: int = 6
 const BOARD_HEIGHT: int = 4
 
-# Watt-Budget für den aktuellen Run
+# Watt-Budget (nur noch informativ, kein hartes Limit mehr)
 var watt_budget: int = 10
 
 
 func _ready() -> void:
-	# Leeres 2D-Array anlegen
 	_init_board()
-	
-	# Brett in der Konsole ausgeben
-	print_board()
 
 
-# Erzeugt ein 2D-Array mit BOARD_HEIGHT Zeilen und BOARD_WIDTH Spalten.
-# Jedes Feld bekommt den Wert null (= leer).
 func _init_board() -> void:
 	board.clear()
-	for row in range(BOARD_HEIGHT):
+	for _row in range(BOARD_HEIGHT):
 		var new_row: Array = []
-		for col in range(BOARD_WIDTH):
+		for _col in range(BOARD_WIDTH):
 			new_row.append(null)
 		board.append(new_row)
 
 
-# Gibt das gesamte Brett Zeile für Zeile in der Konsole aus.
-# Ein leerer Platz wird als "." dargestellt, Bauteile als Buchstabe.
 func print_board() -> void:
 	print("=== Spielfeld (", BOARD_WIDTH, "x", BOARD_HEIGHT, ") ===")
-	print("Watt-Budget: ", get_used_watt(), "/", watt_budget, "  |  Hitze: ", get_total_heat())
-	print()
-	
+	print("Hitze: ", get_total_heat())
 	for row in range(BOARD_HEIGHT):
 		var line: String = ""
 		for col in range(BOARD_WIDTH):
-			var cell = board[row][col]
-			if cell == null:
-				line += ". "
-			else:
-				line += Component.get_display_char(cell) + " "
+			var b = board[row][col]
+			line += (Component.get_display_char(b.type) if b != null else ".") + " "
 		print(line)
-	
-	print()
 
 
-# ---- Platzierung / Entfernung ----
+# ---- Hilfen ----
 
-# Platziert ein Bauteil an Position (col, row).
-# Gibt true zurück bei Erfolg, false bei Misserfolg.
-func place_component(col: int, row: int, type: Component.ComponentType) -> bool:
-	if not _is_in_bounds(col, row):
-		print("FEHLER: Position (", col, ", ", row, ") ist außerhalb des Bretts!")
-		return false
-	
-	if board[row][col] != null:
-		print("FEHLER: Feld (", col, ", ", row, ") ist bereits belegt!")
-		return false
-	
-	if get_used_watt() + Component.get_watt_cost(type) > watt_budget:
-		print("FEHLER: Nicht genug Watt! (", get_used_watt(), " + ", Component.get_watt_cost(type), " > ", watt_budget, ")")
-		return false
-	
-	board[row][col] = type
-	print("Platziert: ", Component.get_type_name(type), " bei (", col, ", ", row, ")")
-	return true
+func _is_in_bounds(col: int, row: int) -> bool:
+	return col >= 0 and col < BOARD_WIDTH and row >= 0 and row < BOARD_HEIGHT
 
 
-# Entfernt ein Bauteil von Position (col, row).
-# Gibt true zurück bei Erfolg, false wenn das Feld leer war.
-func remove_component(col: int, row: int) -> bool:
-	if not _is_in_bounds(col, row):
-		print("FEHLER: Position (", col, ", ", row, ") ist außerhalb des Bretts!")
-		return false
-	
-	if board[row][col] == null:
-		print("FEHLER: Feld (", col, ", ", row, ") ist bereits leer!")
-		return false
-	
-	var removed = board[row][col]
-	board[row][col] = null
-	print("Entfernt: ", Component.get_type_name(removed), " von (", col, ", ", row, ")")
-	return true
-
-
-# Gibt den Bauteil-Typ an Position (col, row) zurück (oder null).
-func get_component(col: int, row: int):
+# Gibt den Block an (col,row) zurück oder null.
+func get_block(col: int, row: int):
 	if not _is_in_bounds(col, row):
 		return null
 	return board[row][col]
 
 
-# ---- Paketfluss-Simulation ----
-
-# Simuliert ein Paket, das durch eine bestimmte Zeile (row) von links nach rechts fließt.
-# Das Paket startet links mit Wert 1 und durchläuft alle Bauteile in der Zeile.
-# Gibt den finalen Paketwert zurück.
-func simulate_packet_flow(row: int) -> int:
-	if row < 0 or row >= BOARD_HEIGHT:
-		print("FEHLER: Ungültige Zeile ", row)
-		return 0
-
-	var packet_value = 1  # Startwert
-
-	for col in range(BOARD_WIDTH):
-		var component = board[row][col]
-		if component == null:
-			continue
-
-		if component == Component.ComponentType.LOOP:
-			# LOOP: wiederholt alle Bauteile LINKS davon in dieser Zeile einmal.
-			# (LOOP/Kühler in diesem Segment werden übersprungen -> keine Endlos-Explosion)
-			for c2 in range(col):
-				var lc = board[row][c2]
-				if lc != null and lc != Component.ComponentType.LOOP and lc != Component.ComponentType.COOL:
-					packet_value = Component.process_packet(lc, packet_value, self, row, c2)
-		elif component == Component.ComponentType.COOL:
-			# Kühler hat keinen Paket-Effekt (wirkt nur auf Hitze)
-			pass
-		else:
-			packet_value = Component.process_packet(component, packet_value, self, row, col)
-
-	return packet_value
+# Kompatibilität: gibt den Typ (Component.ComponentType) an (col,row) zurück
+# oder null. Wird von component.gd (Nachbar-Synergien, Hitze) genutzt.
+func get_component(col: int, row: int):
+	var b = get_block(col, row)
+	return b.type if b != null else null
 
 
-# ---- Hilfsfunktionen ----
+# ---- Platzierung / Entfernung ----
 
-# Prüft, ob eine Position innerhalb des Bretts liegt.
-func _is_in_bounds(col: int, row: int) -> bool:
-	return col >= 0 and col < BOARD_WIDTH and row >= 0 and row < BOARD_HEIGHT
+# Platziert einen Block eines Typs. Standard-Ports: Eingang links, Ausgang rechts.
+# Gibt true bei Erfolg zurück.
+func place_component(col: int, row: int, type: int) -> bool:
+	if not _is_in_bounds(col, row):
+		push_warning("Platzierung außerhalb des Bretts: (%d,%d)" % [col, row])
+		return false
+	if board[row][col] != null:
+		return false
+	board[row][col] = Block.new(type)
+	return true
 
 
-# Gibt den aktuell verbrauchten Watt-Wert zurück.
+# Entfernt den Block an (col,row). Gibt den entfernten Typ zurück oder -1.
+func remove_component(col: int, row: int) -> int:
+	if not _is_in_bounds(col, row) or board[row][col] == null:
+		return -1
+	var removed_type = board[row][col].type
+	board[row][col] = null
+	return removed_type
+
+
+func clear_board() -> void:
+	_init_board()
+
+
+# ---- Watt / Hitze ----
+
 func get_used_watt() -> int:
 	var total = 0
 	for row in range(BOARD_HEIGHT):
 		for col in range(BOARD_WIDTH):
-			var comp = board[row][col]
-			if comp != null:
-				total += Component.get_watt_cost(comp)
+			var b = board[row][col]
+			if b != null:
+				total += Component.get_watt_cost(b.type)
 	return total
 
 
-# Gibt die gesamte erzeugte Hitze des Bretts zurück.
-# Jeder benachbarte Kühler senkt die Hitze eines Bauteils um COOLER_STRENGTH (min 0).
+# Gesamte Hitze. Jeder benachbarte Kühler senkt die Hitze eines Blocks.
 func get_total_heat() -> int:
 	var total = 0
 	var deltas = [[-1, 0], [1, 0], [0, -1], [0, 1]]
 	for row in range(BOARD_HEIGHT):
 		for col in range(BOARD_WIDTH):
-			var comp = board[row][col]
-			if comp == null:
+			var b = board[row][col]
+			if b == null:
 				continue
-			var h = Component.get_heat(comp)
+			var h = Component.get_heat(b.type)
 			for d in deltas:
-				var nr = row + d[0]
-				var nc = col + d[1]
-				if _is_in_bounds(nc, nr) and board[nr][nc] == Component.ComponentType.COOL:
+				if get_component(col + d[1], row + d[0]) == Component.ComponentType.COOL:
 					h -= Component.COOLER_STRENGTH
-			if h < 0:
-				h = 0
-			total += h
+			total += max(0, h)
 	return total
 
 
-# Gibt eine Liste aller leeren Positionen zurück.
+# ---- Paket-Routing (links rein, rechts raus) ----
+
+# Simuliert den Weg eines Pakets. Rückgabe:
+# {
+#   "value": int,           # aufgesammelter Wert
+#   "path": Array,          # [{col,row,before,after,type}]
+#   "reached_end": bool,    # true, wenn das Paket den rechten Rand verlässt
+#   "error": String         # leer, oder Grund für Abbruch
+# }
+func simulate_path() -> Dictionary:
+	var result := {"value": 0, "path": [], "reached_end": false, "error": ""}
+
+	# Startblock finden: Spalte 0, Eingang nach links, oberster.
+	var start_row := -1
+	for row in range(BOARD_HEIGHT):
+		var b = board[row][0]
+		if b != null and b.in_dir == Block.Dir.LEFT:
+			start_row = row
+			break
+	if start_row == -1:
+		result.error = "Kein Startblock: setze in Spalte 0 einen Block mit Eingang nach links."
+		return result
+
+	var value := 1
+	var col := 0
+	var row := start_row
+	var prev_type := -1
+	var visited := {}
+
+	while true:
+		var b = board[row][col]
+		if b == null:
+			result.error = "Interner Fehler: leeres Feld im Pfad."
+			break
+
+		# Effekt anwenden (LOOP wiederholt den vorherigen Block-Effekt)
+		var before := value
+		var effect_type = b.type
+		if b.type == Component.ComponentType.LOOP and prev_type != -1:
+			effect_type = prev_type
+		value = Component.process_packet(effect_type, value, self, row, col)
+		prev_type = effect_type
+
+		result.path.append({
+			"col": col, "row": row, "before": before, "after": value, "type": b.type
+		})
+		visited[Vector2i(col, row)] = true
+
+		# Nächstes Feld anhand des Ausgangs
+		var d: Vector2i = Block.delta(b.out_dir)
+		var nc := col + d.x
+		var nr := row + d.y
+
+		# Rand verlassen?
+		if not _is_in_bounds(nc, nr):
+			result.reached_end = (b.out_dir == Block.Dir.RIGHT and col == BOARD_WIDTH - 1)
+			if not result.reached_end:
+				result.error = "Sackgasse: der Ausgang zeigt aus dem Board (nicht am rechten Rand)."
+			break
+
+		var nb = board[nr][nc]
+		if nb == null:
+			result.error = "Sackgasse: das nächste Feld (%d,%d) ist leer." % [nc, nr]
+			break
+		if nb.in_dir != Block.opposite(b.out_dir):
+			result.error = "Ports passen nicht: (%d,%d) nimmt das Paket nicht an." % [nc, nr]
+			break
+		if visited.has(Vector2i(nc, nr)):
+			result.error = "Schleife erkannt – der Pfad läuft im Kreis."
+			break
+
+		col = nc
+		row = nr
+
+	result.value = value
+	return result
+
+
+# ---- Listen ----
+
+func get_all_components() -> Array:
+	var items = []
+	for row in range(BOARD_HEIGHT):
+		for col in range(BOARD_WIDTH):
+			var b = board[row][col]
+			if b != null:
+				items.append({"type": b.type, "col": col, "row": row})
+	return items
+
+
 func get_available_positions() -> Array:
 	var positions = []
 	for row in range(BOARD_HEIGHT):
@@ -185,24 +215,3 @@ func get_available_positions() -> Array:
 			if board[row][col] == null:
 				positions.append({"col": col, "row": row})
 	return positions
-
-
-# Gibt eine Liste aller platzierten Bauteile mit Positionen zurück.
-func get_all_components() -> Array:
-	var components = []
-	for row in range(BOARD_HEIGHT):
-		for col in range(BOARD_WIDTH):
-			var comp = board[row][col]
-			if comp != null:
-				components.append({
-					"type": comp,
-					"col": col,
-					"row": row
-				})
-	return components
-
-
-# Leert das gesamte Brett.
-func clear_board() -> void:
-	_init_board()
-	print("Brett wurde geleert.")

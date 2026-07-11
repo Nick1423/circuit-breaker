@@ -25,7 +25,6 @@ var modifier: Modifier = Modifier.NONE
 var modifier_name: String = ""
 var modifier_desc: String = ""
 var packet_damage_cap: int = 0     # 0 = kein Deckel
-var dead_row: int = -1             # -1 = keine tote Zeile
 var overheat_factor: float = 1.0   # >1 verstärkt Überhitzungs-Malus
 
 
@@ -64,9 +63,9 @@ func _apply_random_modifier() -> void:
 			packet_damage_cap = max(5, int(max_health / 2.0))
 			modifier_desc = "max. %d Schaden pro Paket" % packet_damage_cap
 		Modifier.JAMMER:
-			modifier_name = "Störsender"
-			modifier_desc = "Zeile 0 zählt nicht"
-			dead_row = 0
+			modifier_name = "Drossel"
+			modifier_desc = "1 Paket weniger"
+			packets_per_round = max(1, packets_per_round - 1)
 		Modifier.MELTDOWN:
 			modifier_name = "Brandmelder"
 			modifier_desc = "Überhitzungs-Malus doppelt"
