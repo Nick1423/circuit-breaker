@@ -27,15 +27,15 @@ const C_CELL    = Color(0.13, 0.15, 0.19)
 const CELL_SIZE := 90
 
 const COMP_COLORS = {
-	Component.ComponentType.TRACE: Color(0.45, 0.45, 0.50),
-	Component.ComponentType.CPU:   Color(0.20, 0.60, 0.85),
-	Component.ComponentType.GPU:   Color(0.85, 0.28, 0.28),
-	Component.ComponentType.LOOP:  Color(0.25, 0.80, 0.45),
-	Component.ComponentType.NPU:   Color(0.92, 0.62, 0.22),
-	Component.ComponentType.RAM:   Color(0.58, 0.38, 0.78),
-	Component.ComponentType.CAP:   Color(0.90, 0.80, 0.28),
-	Component.ComponentType.OC:    Color(0.95, 0.20, 0.58),
-	Component.ComponentType.COOL:  Color(0.32, 0.72, 0.92),
+	Component.ComponentType.TRACE:    Color(0.45, 0.45, 0.50),  # grau
+	Component.ComponentType.CPU:      Color(0.22, 0.55, 0.90),  # blau
+	Component.ComponentType.RAM:      Color(0.60, 0.40, 0.85),  # violett
+	Component.ComponentType.GPU:      Color(0.90, 0.42, 0.20),  # orange
+	Component.ComponentType.NPU:      Color(0.15, 0.75, 0.68),  # türkis
+	Component.ComponentType.CACHE:    Color(0.30, 0.80, 0.45),  # grün
+	Component.ComponentType.HEATSINK: Color(0.40, 0.75, 0.95),  # hellblau
+	Component.ComponentType.PSU:      Color(0.95, 0.80, 0.25),  # gelb
+	Component.ComponentType.MAINBOARD: Color(0.55, 0.62, 0.68), # stahlgrau
 }
 
 var gm = null
@@ -51,6 +51,7 @@ var dialog_root: Control
 var lbl_round: Label
 var lbl_money: Label
 var lbl_score: Label
+var fw_panel: PanelContainer
 var fw_title: Label
 var fw_mod: Label
 var fw_bar: ProgressBar
@@ -78,6 +79,16 @@ var over_round: Label
 var over_score: Label
 var over_high: Label
 
+# Belohnung / Sieg / Vorschau
+var reward_root: Control
+var reward_cards: HBoxContainer
+var victory_root: Control
+var victory_score: Label
+var preview_lbl: Label
+var shop_reroll_btn: Button
+var shop_relics_lbl: Label
+var inv_sell_btn: Button
+
 # Dialog
 var dlg_title: Label
 var dlg_desc: Label
@@ -87,6 +98,9 @@ var dialog_cell := Vector2i(-1, -1)
 # Zustand
 var selected_inv_index := -1
 var _animating := false
+# Pfad-Vorschau (beim Bauen): Zellen auf dem Pfad + Abbruch-Zelle
+var _preview_cells := {}
+var _preview_break := Vector2i(-1, -1)
 
 
 func _ready() -> void:
@@ -96,6 +110,8 @@ func _ready() -> void:
 	_build_menu()
 	_build_game()
 	_build_shop()
+	_build_reward()
+	_build_victory()
 	_build_over()
 	_build_dialog()
 	refresh()
@@ -265,7 +281,7 @@ func _build_game() -> void:
 	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	mid.add_child(left)
 
-	var fw_panel := _panel(C_PANEL, C_DANGER.darkened(0.3), 1, 10)
+	fw_panel = _panel(C_PANEL, C_DANGER.darkened(0.3), 1, 10)
 	left.add_child(fw_panel)
 	var fw_v := VBoxContainer.new()
 	fw_v.add_theme_constant_override("separation", 6)
@@ -288,12 +304,17 @@ func _build_game() -> void:
 	var board_center := CenterContainer.new()
 	board_center.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	left.add_child(board_center)
+	var board_h := HBoxContainer.new()
+	board_h.add_theme_constant_override("separation", 6)
+	board_center.add_child(board_h)
+	board_h.add_child(_marker("START", C_ACCENT2))
 	var grid := GridContainer.new()
 	grid.columns = 6
 	grid.add_theme_constant_override("h_separation", 6)
 	grid.add_theme_constant_override("v_separation", 6)
-	board_center.add_child(grid)
+	board_h.add_child(grid)
 	_build_cells(grid)
+	board_h.add_child(_marker("ZIEL", C_DANGER))
 
 	var heat_panel := _panel(C_PANEL, C_PANEL2, 1, 10)
 	left.add_child(heat_panel)
@@ -323,6 +344,16 @@ func _build_game() -> void:
 	inv_grid.add_theme_constant_override("h_separation", 6)
 	inv_grid.add_theme_constant_override("v_separation", 6)
 	inv_v.add_child(inv_grid)
+	inv_sell_btn = Button.new()
+	inv_sell_btn.text = "Ausgewähltes verkaufen"
+	inv_sell_btn.add_theme_font_size_override("font_size", 13)
+	_style_button(inv_sell_btn, C_PANEL2)
+	inv_sell_btn.pressed.connect(_on_sell)
+	inv_v.add_child(inv_sell_btn)
+
+	preview_lbl = _label("", 14, C_ACCENT2)
+	preview_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	right.add_child(preview_lbl)
 
 	send_btn = Button.new()
 	send_btn.text = ">  PAKETE SENDEN"
@@ -354,7 +385,7 @@ func _build_cells(grid: GridContainer) -> void:
 			_full(char_lbl)
 			char_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 			char_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-			char_lbl.add_theme_font_size_override("font_size", 30)
+			char_lbl.add_theme_font_size_override("font_size", 15)
 			char_lbl.add_theme_color_override("font_color", Color.WHITE)
 			char_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			panel.add_child(char_lbl)
@@ -382,6 +413,21 @@ func _build_cells(grid: GridContainer) -> void:
 			rr.append(panel); rc.append(char_lbl); ri.append(in_lbl); ro.append(out_lbl); rinfo.append(info_btn)
 		cell_root.append(rr); cell_char.append(rc); cell_in.append(ri); cell_out.append(ro); cell_info.append(rinfo)
 
+
+func _vtext(s: String) -> String:
+	var out := ""
+	for i in range(s.length()):
+		out += s[i]
+		if i < s.length() - 1:
+			out += "\n"
+	return out
+
+func _marker(text: String, col: Color) -> Label:
+	var l := _label(_vtext(text), 13, col)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	l.custom_minimum_size = Vector2(26, 0)
+	return l
 
 func _edge_pos(dir: int) -> Vector2:
 	match dir:
@@ -426,13 +472,128 @@ func _build_shop() -> void:
 	shop_offers.add_theme_constant_override("separation", 8)
 	shop_offers.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	v.add_child(shop_offers)
+
+	shop_relics_lbl = _label("", 13, C_ACCENT2)
+	shop_relics_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	v.add_child(shop_relics_lbl)
+
+	var btn_row := HBoxContainer.new()
+	btn_row.add_theme_constant_override("separation", 10)
+	v.add_child(btn_row)
+	shop_reroll_btn = Button.new()
+	shop_reroll_btn.custom_minimum_size = Vector2(0, 50)
+	shop_reroll_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	shop_reroll_btn.add_theme_font_size_override("font_size", 16)
+	_style_button(shop_reroll_btn, C_PANEL2)
+	shop_reroll_btn.pressed.connect(_on_reroll)
+	btn_row.add_child(shop_reroll_btn)
 	var next_btn := Button.new()
 	next_btn.text = "Nächste Runde  >"
 	next_btn.custom_minimum_size = Vector2(0, 50)
-	next_btn.add_theme_font_size_override("font_size", 20)
+	next_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	next_btn.add_theme_font_size_override("font_size", 18)
 	_style_button(next_btn, C_ACCENT2.darkened(0.35))
 	next_btn.pressed.connect(_on_next)
-	v.add_child(next_btn)
+	btn_row.add_child(next_btn)
+
+
+# =============================================================
+#  BELOHNUNGS-OVERLAY (Relikt-Wahl)
+# =============================================================
+
+func _build_reward() -> void:
+	reward_root = Control.new()
+	_full(reward_root)
+	add_child(reward_root)
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.72)
+	_full(dim)
+	reward_root.add_child(dim)
+	var center := CenterContainer.new()
+	_full(center)
+	reward_root.add_child(center)
+	var panel := _panel(C_PANEL, C_ACCENT2.darkened(0.2), 2, 14)
+	center.add_child(panel)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 14)
+	panel.add_child(v)
+	var t := _label("FIREWALL GEKNACKT — wähle ein Relikt", 24, C_ACCENT2)
+	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(t)
+	reward_cards = HBoxContainer.new()
+	reward_cards.add_theme_constant_override("separation", 12)
+	v.add_child(reward_cards)
+
+func _refresh_reward() -> void:
+	for c in reward_cards.get_children():
+		c.queue_free()
+	for i in range(gm.reward_choices.size()):
+		var r = gm.reward_choices[i]
+		var card := _panel(C_PANEL2, C_ACCENT2.darkened(0.3), 1, 10)
+		card.custom_minimum_size = Vector2(210, 0)
+		var cv := VBoxContainer.new()
+		cv.add_theme_constant_override("separation", 10)
+		card.add_child(cv)
+		cv.add_child(_label(gm.RELIC_NAMES[r], 18, C_ACCENT2))
+		var desc := _label(gm.RELIC_DESCS[r], 14, C_TEXT)
+		desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		desc.custom_minimum_size = Vector2(186, 60)
+		cv.add_child(desc)
+		var pick := Button.new()
+		pick.text = "Wählen"
+		pick.custom_minimum_size = Vector2(0, 42)
+		pick.add_theme_font_size_override("font_size", 16)
+		_style_button(pick, C_ACCENT2.darkened(0.35))
+		pick.pressed.connect(_on_reward_pick.bind(i))
+		cv.add_child(pick)
+		reward_cards.add_child(card)
+
+
+# =============================================================
+#  SIEG-OVERLAY
+# =============================================================
+
+func _build_victory() -> void:
+	victory_root = Control.new()
+	_full(victory_root)
+	add_child(victory_root)
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0.04, 0.03, 0.85)
+	_full(dim)
+	victory_root.add_child(dim)
+	var center := CenterContainer.new()
+	_full(center)
+	victory_root.add_child(center)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 14)
+	box.alignment = BoxContainer.ALIGNMENT_CENTER
+	center.add_child(box)
+	var t := _label("SIEG!", 52, C_ACCENT2)
+	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(t)
+	var s := _label("Alle Firewalls geknackt.", 18, C_TEXT)
+	s.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(s)
+	victory_score = _label("", 22, C_WARN)
+	victory_score.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(victory_score)
+	var sp := Control.new()
+	sp.custom_minimum_size = Vector2(0, 14)
+	box.add_child(sp)
+	var again := Button.new()
+	again.text = "Nochmal"
+	again.custom_minimum_size = Vector2(260, 50)
+	again.add_theme_font_size_override("font_size", 20)
+	_style_button(again, C_ACCENT2.darkened(0.35))
+	again.pressed.connect(_on_play)
+	box.add_child(again)
+	var menu := Button.new()
+	menu.text = "Hauptmenü"
+	menu.custom_minimum_size = Vector2(260, 42)
+	menu.add_theme_font_size_override("font_size", 17)
+	_style_button(menu, C_PANEL2)
+	menu.pressed.connect(func(): gm.show_homescreen())
+	box.add_child(menu)
 
 
 # =============================================================
@@ -607,6 +768,22 @@ func _on_buy(index: int) -> void:
 	gm.buy_component(index)
 	refresh()
 
+func _on_reroll() -> void:
+	gm.reroll_shop()
+	refresh()
+
+func _on_sell() -> void:
+	if selected_inv_index >= 0:
+		gm.sell_item(selected_inv_index)
+		selected_inv_index = -1
+	else:
+		_set_msg("Wähle zuerst ein Inventar-Item zum Verkaufen.")
+	refresh()
+
+func _on_reward_pick(index: int) -> void:
+	gm.choose_reward(index)
+	refresh()
+
 func _on_cell_info(c: int, r: int) -> void:
 	if _animating:
 		return
@@ -665,6 +842,7 @@ func _on_send() -> void:
 	_animating = true
 	send_btn.disabled = true
 	await _animate_packet(res)
+	await _animate_firewall_hit(res)
 	_animating = false
 	gm.apply_send(res)
 	refresh()
@@ -731,17 +909,71 @@ func _animate_packet(res: Dictionary) -> void:
 			pt.tween_property(token, "scale", Vector2(1, 1), 0.08)
 			await pt.finished
 
+	# Nach dem Pfad: Multiplikatoren sichtbar machen (Durchbruch + Mainboard)
+	var last = path[path.size() - 1]
+	var last_center = _cell_center(last.col, last.row)
+	var per_packet = int(res.get("per_packet", 0))
+	var path_value = int(res.get("path_value", 0))
+	if per_packet > path_value:
+		lbl.text = str(per_packet)
+		if res.get("reached_end", false):
+			_spawn_float("Durchbruch!", last_center + Vector2(0, -22), C_ACCENT)
+		var bt := create_tween()
+		bt.tween_property(token, "scale", Vector2(1.4, 1.4), 0.1)
+		bt.tween_property(token, "scale", Vector2(1, 1), 0.1)
+		await bt.finished
+
 	if res.get("reached_end", false):
-		var last = path[path.size() - 1]
-		var off = _cell_center(last.col, last.row) - token.size / 2.0 + Vector2(150, 0)
+		var off = last_center - token.size / 2.0 + Vector2(150, 0)
 		var et := create_tween()
-		et.tween_property(token, "global_position", off, 0.28)
-		et.parallel().tween_property(token, "modulate:a", 0.0, 0.28)
+		et.tween_property(token, "global_position", off, 0.25)
+		et.parallel().tween_property(token, "modulate:a", 0.0, 0.25)
 		await et.finished
 	else:
 		await get_tree().create_timer(0.15).timeout
 
 	token.queue_free()
+
+
+# Der Einschlag an der Firewall: Paket fliegt in den Balken, der HP-Balken
+# sackt ab, dazu Schadenszahl, Flash und ein kurzer "Punch".
+func _animate_firewall_hit(res: Dictionary) -> void:
+	var dmg := int(res.get("total_damage", 0))
+	if dmg <= 0 or fw_bar == null:
+		await get_tree().create_timer(0.1).timeout
+		return
+
+	# Paket-Token (zeigt den GESAMTschaden) vom rechten Board-Rand in die Firewall schießen
+	var packets := int(res.get("packets", 1))
+	var token := _make_packet_token(dmg)
+	add_child(token)
+	token.global_position = _cell_center(5, 0) - token.size / 2.0
+	if packets > 1:
+		_spawn_float("× %d Pakete" % packets, _cell_center(5, 0) + Vector2(0, -26), C_WARN)
+	var target = fw_bar.global_position + fw_bar.size / 2.0 - token.size / 2.0
+	var ft := create_tween()
+	ft.tween_property(token, "global_position", target, 0.28).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+	await ft.finished
+	token.queue_free()
+
+	# Einschlag
+	var old_hp = fw_bar.value
+	var new_hp = max(0, old_hp - dmg)
+	_spawn_float("-%d" % dmg, fw_bar.global_position + Vector2(fw_bar.size.x * 0.5, -8), C_DANGER)
+
+	fw_bar.pivot_offset = fw_bar.size / 2.0
+	var punch := create_tween()
+	punch.tween_property(fw_bar, "scale", Vector2(1.05, 1.25), 0.06)
+	punch.tween_property(fw_bar, "scale", Vector2(1, 1), 0.18)
+
+	if fw_panel:
+		var flash := create_tween()
+		flash.tween_property(fw_panel, "modulate", Color(1.7, 1.2, 1.2), 0.06)
+		flash.tween_property(fw_panel, "modulate", Color(1, 1, 1), 0.22)
+
+	var hp := create_tween()
+	hp.tween_property(fw_bar, "value", new_hp, 0.4).set_trans(Tween.TRANS_CUBIC)
+	await hp.finished
 
 
 # =============================================================
@@ -758,12 +990,30 @@ func refresh() -> void:
 	game_root.visible = not in_menu
 	shop_root.visible = phase == gm.GamePhase.SHOP
 	over_root.visible = phase == gm.GamePhase.GAMEOVER
+	reward_root.visible = phase == gm.GamePhase.REWARD
+	victory_root.visible = phase == gm.GamePhase.VICTORY
 	if dialog_root:
 		dialog_root.visible = dialog_root.visible and phase == gm.GamePhase.BUILD
 
 	if in_menu:
 		menu_high.text = ("Highscore: %d" % gm.highscore) if gm.highscore > 0 else ""
 		return
+
+	# Pfad-Vorschau + Schadens-Vorschau (nur beim Bauen)
+	_preview_cells = {}
+	_preview_break = Vector2i(-1, -1)
+	if phase == gm.GamePhase.BUILD:
+		var pv = gm.compute_send()
+		var ppath: Array = pv.get("path", [])
+		for step in ppath:
+			_preview_cells[Vector2i(step.col, step.row)] = true
+		if not pv.get("reached_end", false) and not ppath.is_empty():
+			var last = ppath[ppath.size() - 1]
+			_preview_break = Vector2i(last.col, last.row)
+		_update_preview_label(pv)
+	else:
+		if preview_lbl:
+			preview_lbl.text = ""
 
 	# HUD
 	lbl_round.text = ("Vorbereitung" if gm.current_round == 0 else "Runde %d" % gm.current_round)
@@ -787,9 +1037,9 @@ func refresh() -> void:
 
 	_refresh_cells()
 
-	# Hitze
+	# Hitze (Netzteile + Wärmeleitpaste-Relikt heben das Limit) – gleiche Quelle wie die Berechnung
 	var heat = gm.board.get_total_heat()
-	var hlimit = gm.firewall.heat_limit if gm.firewall else 7
+	var hlimit = gm.effective_heat_limit()
 	heat_bar.max_value = max(1, hlimit)
 	heat_bar.value = min(heat, hlimit)
 	if heat > hlimit:
@@ -810,12 +1060,36 @@ func refresh() -> void:
 
 	if phase == gm.GamePhase.SHOP:
 		_refresh_shop()
+	if phase == gm.GamePhase.REWARD:
+		_refresh_reward()
+	if phase == gm.GamePhase.VICTORY:
+		victory_score.text = "Score: %d" % gm.score
 	if phase == gm.GamePhase.GAMEOVER:
 		over_round.text = "Erreichte Runde: %d" % gm.current_round
 		over_score.text = "Score: %d" % gm.score
 		over_high.text = ("* NEUER HIGHSCORE *" if (gm.score >= gm.highscore and gm.score > 0) else "Highscore: %d" % gm.highscore)
 	if dialog_root and dialog_root.visible:
 		_refresh_dialog()
+
+
+# Text der Schadens-Vorschau unter dem Senden-Button.
+func _update_preview_label(pv: Dictionary) -> void:
+	if preview_lbl == null:
+		return
+	var ppath: Array = pv.get("path", [])
+	if ppath.is_empty():
+		preview_lbl.add_theme_color_override("font_color", C_DANGER)
+		preview_lbl.text = "Kein Pfad: setze in Spalte 0 einen Block mit Eingang nach links."
+		return
+	var per_packet = int(pv.get("per_packet", 0))
+	var packets = int(pv.get("packets", 1))
+	var dmg = int(pv.get("total_damage", 0))
+	var reached = pv.get("reached_end", false)
+	var oh = "  •  ÜBERHITZT" if pv.get("overheated", false) else ""
+	var status = "Ziel erreicht" if reached else "Ziel NICHT erreicht"
+	preview_lbl.text = "Vorschau: %d × %d Pakete = ~%d Schaden  •  %s%s" % [per_packet, packets, dmg, status, oh]
+	var win = gm.firewall != null and dmg >= gm.firewall.health
+	preview_lbl.add_theme_color_override("font_color", C_ACCENT2 if win else (C_WARN if reached else C_DANGER))
 
 
 func _refresh_cells() -> void:
@@ -835,8 +1109,17 @@ func _refresh_cells() -> void:
 				info_btn.visible = false
 			else:
 				var col: Color = COMP_COLORS.get(b.type, C_PANEL2)
-				panel.add_theme_stylebox_override("panel", _sb(col.darkened(0.1), col.lightened(0.25), 2, 8, 0))
-				char_lbl.text = Component.get_display_char(b.type)
+				var key := Vector2i(c, r)
+				var border: Color = col.lightened(0.25)
+				var bw := 2
+				if _preview_break == key:
+					border = C_DANGER
+					bw = 4
+				elif _preview_cells.has(key):
+					border = C_ACCENT2
+					bw = 4
+				panel.add_theme_stylebox_override("panel", _sb(col.darkened(0.1), border, bw, 8, 0))
+				char_lbl.text = "%s\n%s" % [Component.get_short_name(b.type), Component.get_label(b.type)]
 				in_lbl.text = Block.arrow(b.in_dir)
 				in_lbl.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
 				in_lbl.position = _edge_pos(b.in_dir)
@@ -855,9 +1138,9 @@ func _refresh_inventory() -> void:
 	for i in range(gm.inventory.get_item_count()):
 		var t = gm.inventory.peek_item(i)
 		var b := Button.new()
-		b.text = Component.get_display_char(t)
-		b.custom_minimum_size = Vector2(56, 48)
-		b.add_theme_font_size_override("font_size", 20)
+		b.text = "%s\n%s" % [Component.get_short_name(t), Component.get_label(t)]
+		b.custom_minimum_size = Vector2(72, 52)
+		b.add_theme_font_size_override("font_size", 13)
 		b.tooltip_text = "%s\n%s" % [Component.get_type_name(t), Component.get_description(t)]
 		var base: Color = COMP_COLORS.get(t, C_PANEL2)
 		if i == selected_inv_index:
@@ -870,6 +1153,20 @@ func _refresh_inventory() -> void:
 
 func _refresh_shop() -> void:
 	shop_money.text = "Geld: %d" % gm.money
+
+	# Reroll-Button
+	shop_reroll_btn.text = "Neu würfeln (%d G)" % gm.reroll_cost
+	shop_reroll_btn.disabled = gm.money < gm.reroll_cost
+
+	# Gesammelte Relikte
+	if gm.relics.is_empty():
+		shop_relics_lbl.text = "Relikte: (noch keine)"
+	else:
+		var names = []
+		for r in gm.relics:
+			names.append(gm.RELIC_NAMES[r])
+		shop_relics_lbl.text = "Relikte: " + ", ".join(names)
+
 	for child in shop_offers.get_children():
 		child.queue_free()
 	var offers = gm.shop.offers
@@ -884,7 +1181,10 @@ func _refresh_shop() -> void:
 		var h := HBoxContainer.new()
 		h.add_theme_constant_override("separation", 12)
 		row.add_child(h)
-		h.add_child(_label(Component.get_display_char(t), 22, Color.WHITE))
+		var sw := _label("%s\n%s" % [Component.get_short_name(t), Component.get_label(t)], 15, Color.WHITE)
+		sw.custom_minimum_size = Vector2(64, 0)
+		sw.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		h.add_child(sw)
 		var info := VBoxContainer.new()
 		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		info.add_child(_label("%s  (%dH)" % [Component.get_type_name(t), Component.get_heat(t)], 16, C_TEXT))

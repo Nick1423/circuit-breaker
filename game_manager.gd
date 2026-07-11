@@ -13,8 +13,31 @@ const Inventory = preload("res://inventory.gd")
 @onready var board: Node2D = $"../Board"
 
 # Spiel-Zustand
-enum GamePhase { HOMESCREEN, BUILD, SEND, RESULT, SHOP, GAMEOVER }
+enum GamePhase { HOMESCREEN, BUILD, SEND, RESULT, REWARD, SHOP, GAMEOVER, VICTORY }
 var phase: GamePhase = GamePhase.HOMESCREEN
+
+# Runde, ab der der Run gewonnen ist
+const WIN_ROUND: int = 10
+
+# Reliktarten (dauerhafte Run-Boni)
+enum Relic { STARTSPANNUNG, BUSBREITE, DURCHBRUCH, KUEHLPASTE, EFFIZIENZ }
+const RELIC_NAMES := {
+	Relic.STARTSPANNUNG: "Startspannung",
+	Relic.BUSBREITE:     "Bus-Breite",
+	Relic.DURCHBRUCH:    "Durchbruch-Optimierung",
+	Relic.KUEHLPASTE:    "Wärmeleitpaste",
+	Relic.EFFIZIENZ:     "Effizienz-Firmware",
+}
+const RELIC_DESCS := {
+	Relic.STARTSPANNUNG: "Pakete starten mit Wert 3 statt 1.",
+	Relic.BUSBREITE:     "+1 Paket pro Runde.",
+	Relic.DURCHBRUCH:    "Durchbruch-Bonus ×2 statt ×1,5.",
+	Relic.KUEHLPASTE:    "Hitze-Limit +4.",
+	Relic.EFFIZIENZ:     "Gesamtschaden +25%.",
+}
+# Aktuell im Run gesammelte Relikte + zur Wahl stehende Belohnung
+var relics: Array = []
+var reward_choices: Array = []
 
 # Spiel-Ressourcen
 var money: int = 5
@@ -22,6 +45,7 @@ var score: int = 0
 var highscore: int = 0
 var current_round: int = 0
 var base_watt_budget: int = 10
+var reroll_cost: int = 3
 
 # Kurze Rückmeldung für die UI (Ergebnis, Kauf, Fehler)
 var ui_message: String = ""
@@ -87,15 +111,21 @@ func start_new_run() -> void:
 	score = 0
 	current_round = 0
 	firewall = null
+	relics = []
+	reward_choices = []
+	reroll_cost = 3
 	stats = {
 		"total_damage": 0, "firewalls_destroyed": 0,
 		"components_placed": 0, "components_bought": 0,
 		"packets_sent": 0, "best_single_packet": 0
 	}
 	inventory = Inventory.new()
+	# Start-Ausrüstung: 5 Leiterbahnen, damit ein Weg gebaut werden kann
+	for _i in range(5):
+		inventory.add_item(Component.ComponentType.TRACE)
 	board.clear_board()
 	print("=== NEUER RUN GESTARTET === Start-Geld: ", money)
-	ui_message = "Kaufe erst ein paar Bausteine, dann starte Runde 1."
+	ui_message = "Du hast 5 Leiterbahnen. Kaufe Bauteile, dann starte Runde 1."
 	# Run beginnt im Shop: erst Bausteine kaufen, dann 'Nächste Runde'.
 	start_shop_phase()
 
@@ -126,27 +156,49 @@ func start_round() -> void:
 #  PAKETE SENDEN
 # =============================================
 
+# Effektives Hitze-Limit der Runde – EINE Quelle für Anzeige und Berechnung.
+# = Firewall-Basis + Netzteile (+3 je Stück) + Wärmeleitpaste-Relikt (+4).
+func effective_heat_limit() -> int:
+	var limit = firewall.heat_limit if firewall else 7
+	limit += board.get_power_bonus()
+	if has_relic(Relic.KUEHLPASTE):
+		limit += 4
+	return limit
+
+
 # Berechnet den kompletten Sende-Vorgang OHNE Zustandsänderung.
 # Wird von der UI genutzt, um zuerst die Animation zu zeigen und danach
 # via apply_send() den Schaden anzuwenden. Gibt ein Ergebnis-Dictionary zurück.
 func compute_send() -> Dictionary:
-	var path_result = board.simulate_path()
+	# Startwert (Relikt Startspannung)
+	var start_value = 3 if has_relic(Relic.STARTSPANNUNG) else 1
+	var path_result = board.simulate_path(start_value)
 	var per_packet = int(path_result.value)
 
-	# Durchbruch-Bonus: Paket erreicht den rechten Rand -> +50%
+	# Durchbruch-Bonus: Paket erreicht den rechten Rand
 	if path_result.reached_end:
-		per_packet = int(ceil(per_packet * 1.5))
+		var break_mult = 2.0 if has_relic(Relic.DURCHBRUCH) else 1.5
+		per_packet = int(ceil(per_packet * break_mult))
+
+	# Mainboard: board-weiter Multiplikator
+	per_packet = int(per_packet * board.get_board_multiplier())
 
 	# Schild-Modifikator: Schaden pro Paket gedeckelt
 	if firewall and firewall.packet_damage_cap > 0:
 		per_packet = min(per_packet, firewall.packet_damage_cap)
 
-	var packets = firewall.packets_per_round if firewall else 1
+	var packets = (firewall.packets_per_round if firewall else 1)
+	if has_relic(Relic.BUSBREITE):
+		packets += 1
 	var raw = per_packet * packets
 
-	# Überhitzung
+	# Effizienz-Relikt: +25% Gesamtschaden
+	if has_relic(Relic.EFFIZIENZ):
+		raw = int(raw * 1.25)
+
+	# Überhitzung (Netzteile + Wärmeleitpaste heben das Limit) – gleiche Quelle wie die Anzeige
 	var heat = board.get_total_heat()
-	var hlimit = firewall.heat_limit if firewall else 999
+	var hlimit = effective_heat_limit()
 	var overheated = heat > hlimit
 	var total = raw
 	if overheated:
@@ -198,8 +250,12 @@ func apply_send(res: Dictionary) -> void:
 	if not firewall.is_alive():
 		stats.firewalls_destroyed += 1
 		money += firewall.reward_watt
-		ui_message = "Firewall zerstört! %d Schaden%s  •  +%d Geld" % [total_damage, note, firewall.reward_watt]
-		start_shop_phase()
+		if current_round >= WIN_ROUND:
+			ui_message = "Alle %d Firewalls geknackt – du hast gewonnen!" % WIN_ROUND
+			show_victory()
+		else:
+			ui_message = "Firewall zerstört! %d Schaden%s  •  +%d Geld" % [total_damage, note, firewall.reward_watt]
+			start_reward_phase()
 	else:
 		ui_message = "Nur %d Schaden%s — Firewall hält (%d/%d HP)." % [total_damage, note, firewall.health, firewall.max_health]
 		show_game_over()
@@ -218,11 +274,84 @@ func send_all_packets() -> void:
 
 func start_shop_phase() -> void:
 	phase = GamePhase.SHOP
+	reroll_cost = 3
 	shop.generate_offerings(current_round)
 	_redraw_ui()
 	print("========== SHOP ==========")
 	print("Geld: ", money)
 	shop.print_shop()
+
+
+# Neu würfeln der Shop-Angebote gegen Bezahlung.
+func reroll_shop() -> void:
+	if phase != GamePhase.SHOP:
+		return
+	if money < reroll_cost:
+		ui_message = "Reroll kostet %d Geld – du hast nur %d." % [reroll_cost, money]
+		_redraw_ui()
+		return
+	money -= reroll_cost
+	reroll_cost += 1
+	shop.generate_offerings(current_round)
+	ui_message = "Neue Angebote gewürfelt."
+	_redraw_ui()
+
+
+# Verkauft ein Inventar-Item für die Hälfte des Basispreises (mind. 1).
+func sell_item(index: int) -> void:
+	if inventory == null:
+		return
+	var t = inventory.peek_item(index)
+	if t == -1:
+		return
+	var refund = max(1, int(Component.get_base_price(t) / 2.0))
+	inventory.take_item(index)
+	money += refund
+	ui_message = "Verkauft: %s für %d Geld." % [Component.get_type_name(t), refund]
+	_redraw_ui()
+
+
+# =============================================
+#  RELIKTE / BELOHNUNG / SIEG
+# =============================================
+
+func has_relic(r: int) -> bool:
+	return relics.has(r)
+
+
+# Nach einem Sieg: bis zu 3 zufällige, noch nicht besessene Relikte anbieten.
+func start_reward_phase() -> void:
+	var pool = []
+	for r in [Relic.STARTSPANNUNG, Relic.BUSBREITE, Relic.DURCHBRUCH, Relic.KUEHLPASTE, Relic.EFFIZIENZ]:
+		if not relics.has(r):
+			pool.append(r)
+	pool.shuffle()
+	reward_choices = pool.slice(0, min(3, pool.size()))
+	if reward_choices.is_empty():
+		# Alle Relikte gesammelt -> direkt in den Shop
+		start_shop_phase()
+		return
+	phase = GamePhase.REWARD
+	_redraw_ui()
+
+
+func choose_reward(index: int) -> void:
+	if phase != GamePhase.REWARD:
+		return
+	if index >= 0 and index < reward_choices.size():
+		var r = reward_choices[index]
+		relics.append(r)
+		ui_message = "Relikt erhalten: %s" % RELIC_NAMES[r]
+	reward_choices = []
+	start_shop_phase()
+
+
+func show_victory() -> void:
+	phase = GamePhase.VICTORY
+	if score > highscore:
+		highscore = score
+	print("=== SIEG === Score: ", score)
+	_redraw_ui()
 
 
 func buy_component(index: int) -> void:
@@ -257,154 +386,5 @@ func show_game_over() -> void:
 	_redraw_ui()
 
 
-# =============================================
-#  BEFEHLE
-# =============================================
-
-func handle_command(text: String) -> void:
-	var parts = text.strip_edges().split(" ", false)
-	if parts.size() == 0:
-		return
-	var cmd = parts[0].to_lower()
-	
-	match cmd:
-		"help", "h":
-			_show_help()
-		"start":
-			if phase == GamePhase.HOMESCREEN:
-				start_new_run()
-		"place", "p":
-			_cmd_place(parts)
-		"remove", "r":
-			_cmd_remove(parts)
-		"select", "s":
-			_cmd_select(parts)
-		"invuse", "i":
-			_cmd_invuse(parts)
-		"inv":
-			inventory.print_inventory()
-		"send":
-			send_all_packets()
-		"buy", "b":
-			if parts.size() >= 2:
-				buy_component(int(parts[1]))
-		"next", "n":
-			if phase == GamePhase.SHOP:
-				start_round()
-		"board":
-			board.print_board()
-		"status":
-			_cmd_status()
-		"clear":
-			board.clear_board()
-			_redraw_ui()
-		"restart":
-			start_new_run()
-		"menu":
-			show_homescreen()
-		"quit", "q":
-			print("Spiel beendet.")
-			get_tree().quit()
-		_:
-			print("Unbekannter Befehl. 'help' für Hilfe.")
-
-
-func _show_help() -> void:
-	match phase:
-		GamePhase.HOMESCREEN:
-			print("start, quit")
-		GamePhase.BUILD:
-			print("place CPU 0 0 | remove 0 0 | select GPU")
-			print("invuse 0 1 1 | inv | send | board | clear")
-			print("Bauteile: CPU GPU LOOP NPU RAM CAP OC COOL TRACE")
-		GamePhase.SHOP:
-			print("buy <nr> | next | inv")
-		GamePhase.GAMEOVER:
-			print("restart, menu")
-		_:
-			print("help, status, board")
-
-
-func _cmd_place(parts: Array) -> void:
-	if phase != GamePhase.BUILD:
-		print("Nur in Bau-Phase!")
-		return
-	if parts.size() < 4:
-		print("Usage: place <TYP> <x> <y>")
-		return
-	
-	var type_map = {
-		"CPU": Component.ComponentType.CPU, "GPU": Component.ComponentType.GPU,
-		"LOOP": Component.ComponentType.LOOP, "TRACE": Component.ComponentType.TRACE,
-		"NPU": Component.ComponentType.NPU, "RAM": Component.ComponentType.RAM,
-		"CAP": Component.ComponentType.CAP, "OC": Component.ComponentType.OC,
-		"COOL": Component.ComponentType.COOL
-	}
-	var t = parts[1].to_upper()
-	if not type_map.has(t):
-		print("Unbekannter Typ: ", parts[1])
-		return
-	
-	var ok = board.place_component(int(parts[2]), int(parts[3]), type_map[t])
-	if ok:
-		stats.components_placed += 1
-	_redraw_ui()
-
-
-func _cmd_remove(parts: Array) -> void:
-	if phase != GamePhase.BUILD:
-		print("Nur in Bau-Phase!")
-		return
-	if parts.size() < 3:
-		print("Usage: remove <x> <y>")
-		return
-	board.remove_component(int(parts[1]), int(parts[2]))
-	_redraw_ui()
-
-
-func _cmd_select(parts: Array) -> void:
-	if parts.size() < 2:
-		print("Aktuell: ", Component.get_type_name(selected_component))
-		return
-	var type_map = {
-		"CPU": Component.ComponentType.CPU, "GPU": Component.ComponentType.GPU,
-		"LOOP": Component.ComponentType.LOOP, "TRACE": Component.ComponentType.TRACE,
-		"NPU": Component.ComponentType.NPU, "RAM": Component.ComponentType.RAM,
-		"CAP": Component.ComponentType.CAP, "OC": Component.ComponentType.OC,
-		"COOL": Component.ComponentType.COOL
-	}
-	var key = parts[1].to_upper()
-	if type_map.has(key):
-		selected_component = type_map[key]
-		print("Ausgewählt: ", Component.get_type_name(selected_component))
-	_redraw_ui()
-
-
-func _cmd_invuse(parts: Array) -> void:
-	if phase != GamePhase.BUILD:
-		print("Nur in Bau-Phase!")
-		return
-	if parts.size() < 4:
-		print("Usage: invuse <inv_idx> <x> <y>")
-		return
-	
-	var idx = int(parts[1])
-	var ct = inventory.peek_item(idx)
-	if ct == -1:
-		print("Ungültiger Index!")
-		return
-	
-	var ok = board.place_component(int(parts[2]), int(parts[3]), ct)
-	if ok:
-		inventory.take_item(idx)
-		stats.components_placed += 1
-	_redraw_ui()
-
-
-func _cmd_status() -> void:
-	print("Runde: ", current_round, " | Geld: ", money, " | Score: ", score)
-	print("Watt: ", board.get_used_watt(), "/", board.watt_budget, " | Hitze: ", board.get_total_heat())
-	print("Ausgewählt: ", Component.get_type_name(selected_component))
-	print("Inventar: ", inventory.get_item_count(), "/", inventory.max_size)
-	if firewall:
-		print(firewall.get_status())
+# Konsolen-Befehle wurden entfernt – die Steuerung läuft komplett über die
+# klickbare UI (ui.gd).

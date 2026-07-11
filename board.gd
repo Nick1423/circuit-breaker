@@ -112,10 +112,32 @@ func get_total_heat() -> int:
 				continue
 			var h = Component.get_heat(b.type)
 			for d in deltas:
-				if get_component(col + d[1], row + d[0]) == Component.ComponentType.COOL:
+				if get_component(col + d[1], row + d[0]) == Component.ComponentType.HEATSINK:
 					h -= Component.COOLER_STRENGTH
 			total += max(0, h)
 	return total
+
+
+# Bonus aufs Hitze-Limit durch platzierte Netzteile (+3 je PSU).
+func get_power_bonus() -> int:
+	var count = 0
+	for row in range(BOARD_HEIGHT):
+		for col in range(BOARD_WIDTH):
+			var b = board[row][col]
+			if b != null and b.type == Component.ComponentType.PSU:
+				count += 1
+	return count * Component.PSU_HEAT_BONUS
+
+
+# Endschaden-Multiplikator durch platzierte Mainboards (+50% je Stück).
+func get_board_multiplier() -> float:
+	var count = 0
+	for row in range(BOARD_HEIGHT):
+		for col in range(BOARD_WIDTH):
+			var b = board[row][col]
+			if b != null and b.type == Component.ComponentType.MAINBOARD:
+				count += 1
+	return 1.0 + count * Component.MAINBOARD_BONUS
 
 
 # ---- Paket-Routing (links rein, rechts raus) ----
@@ -127,7 +149,7 @@ func get_total_heat() -> int:
 #   "reached_end": bool,    # true, wenn das Paket den rechten Rand verlässt
 #   "error": String         # leer, oder Grund für Abbruch
 # }
-func simulate_path() -> Dictionary:
+func simulate_path(start_value: int = 1) -> Dictionary:
 	var result := {"value": 0, "path": [], "reached_end": false, "error": ""}
 
 	# Startblock finden: Spalte 0, Eingang nach links, oberster.
@@ -141,7 +163,7 @@ func simulate_path() -> Dictionary:
 		result.error = "Kein Startblock: setze in Spalte 0 einen Block mit Eingang nach links."
 		return result
 
-	var value := 1
+	var value := start_value
 	var col := 0
 	var row := start_row
 	var prev_type := -1
@@ -154,12 +176,19 @@ func simulate_path() -> Dictionary:
 			break
 
 		# Effekt anwenden (LOOP wiederholt den vorherigen Block-Effekt)
-		var before := value
-		var effect_type = b.type
-		if b.type == Component.ComponentType.LOOP and prev_type != -1:
-			effect_type = prev_type
-		value = Component.process_packet(effect_type, value, self, row, col)
-		prev_type = effect_type
+		var before: int = value
+		var prior: int = result.path.size()  # Anzahl bereits durchlaufener Bausteine
+		match b.type:
+			Component.ComponentType.CACHE:
+				# Cache wiederholt den Effekt des vorherigen Bausteins
+				if prev_type != -1:
+					value = Component.process_packet(prev_type, value)
+			Component.ComponentType.RAM:
+				# RAM: +2 je bereits durchlaufenem Baustein
+				value += 2 * prior
+			_:
+				value = Component.process_packet(b.type, value)
+		prev_type = b.type
 
 		result.path.append({
 			"col": col, "row": row, "before": before, "after": value, "type": b.type

@@ -46,52 +46,33 @@ func generate_offerings(round_number: int) -> void:
 
 
 # Gibt einen zufälligen Bauteil-Typ zurück (seltenere = stärkere Bauteile)
-func _get_random_component() -> Component.ComponentType:
+func _get_random_component() -> int:
 	var roll = randf()
 
 	# Häufig -> selten
-	if roll < 0.12:
+	if roll < 0.15:
 		return Component.ComponentType.TRACE
-	elif roll < 0.42:
+	elif roll < 0.36:
 		return Component.ComponentType.CPU
-	elif roll < 0.52:
-		return Component.ComponentType.COOL
-	elif roll < 0.64:
+	elif roll < 0.46:
+		return Component.ComponentType.HEATSINK
+	elif roll < 0.58:
 		return Component.ComponentType.RAM
-	elif roll < 0.74:
-		return Component.ComponentType.CAP
-	elif roll < 0.82:
+	elif roll < 0.70:
 		return Component.ComponentType.NPU
-	elif roll < 0.91:
-		return Component.ComponentType.LOOP
-	elif roll < 0.97:
+	elif roll < 0.80:
+		return Component.ComponentType.PSU
+	elif roll < 0.90:
 		return Component.ComponentType.GPU
+	elif roll < 0.96:
+		return Component.ComponentType.CACHE
 	else:
-		return Component.ComponentType.OC
+		return Component.ComponentType.MAINBOARD
 
 
-# Gibt den Basis-Preis für einen Bauteil-Typ zurück
-func _get_base_price(type: Component.ComponentType) -> int:
-	match type:
-		Component.ComponentType.TRACE:
-			return 1
-		Component.ComponentType.CPU:
-			return 3
-		Component.ComponentType.COOL:
-			return 2
-		Component.ComponentType.RAM:
-			return 4
-		Component.ComponentType.CAP:
-			return 5
-		Component.ComponentType.NPU:
-			return 6
-		Component.ComponentType.LOOP:
-			return 5
-		Component.ComponentType.GPU:
-			return 8
-		Component.ComponentType.OC:
-			return 10
-	return 1
+# Basis-Preis kommt aus der zentralen Bauteil-Tabelle
+func _get_base_price(type: int) -> int:
+	return Component.get_base_price(type)
 
 
 # Kauft ein Angebot (gibt den Typ zurück, null wenn nicht genug Geld)
