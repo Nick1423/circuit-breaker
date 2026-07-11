@@ -13,15 +13,20 @@ const BOARD_OFFSET_Y: int = 80
 
 # Farben für Bauteile
 const COLORS = {
-	null: Color(0.2, 0.2, 0.2, 1),        # Leer - Dunkelgrau
+	null: Color(0.2, 0.2, 0.2, 1),                           # Leer - Dunkelgrau
 	Component.ComponentType.TRACE: Color(0.4, 0.4, 0.4, 1),  # Grau
 	Component.ComponentType.CPU: Color(0.2, 0.6, 0.8, 1),    # Blau
 	Component.ComponentType.GPU: Color(0.8, 0.2, 0.2, 1),    # Rot
 	Component.ComponentType.LOOP: Color(0.2, 0.8, 0.4, 1),   # Grün
 	Component.ComponentType.NPU: Color(0.8, 0.6, 0.2, 1),    # Orange
+	Component.ComponentType.RAM: Color(0.5, 0.3, 0.7, 1),    # Violett
+	Component.ComponentType.CAP: Color(0.9, 0.8, 0.2, 1),    # Gelb
+	Component.ComponentType.OC: Color(0.9, 0.1, 0.5, 1),     # Magenta
+	Component.ComponentType.COOL: Color(0.3, 0.7, 0.9, 1),   # Hellblau
 }
 
 var board_ref = null  # Referenz auf board.gd
+var gm_ref = null     # Referenz auf game_manager.gd (für Firewall/Modifikator)
 var tile_rects: Array = []  # Für Klick-Erkennung
 
 var mouse_col: int = -1
@@ -31,6 +36,7 @@ var mouse_row: int = -1
 func _ready() -> void:
 	custom_minimum_size = Vector2(600, 500)
 	board_ref = $"../Board"
+	gm_ref = $"../GameManager"
 
 
 func _draw() -> void:
@@ -39,10 +45,26 @@ func _draw() -> void:
 	# Überschrift
 	draw_string(ThemeDB.fallback_font, Vector2(20, 30), "Platine", HORIZONTAL_ALIGNMENT_LEFT, -1, 20, Color.WHITE)
 	
-	# Watt-Anzeige
+	# Watt- & Hitze-Anzeige
 	if board_ref:
 		var watt_text = "Watt: %d/%d" % [board_ref.get_used_watt(), board_ref.watt_budget]
 		draw_string(ThemeDB.fallback_font, Vector2(20, 55), watt_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color.LIGHT_GRAY)
+
+		var heat = board_ref.get_total_heat()
+		var heat_limit = 99
+		if gm_ref and gm_ref.firewall:
+			heat_limit = gm_ref.firewall.heat_limit
+		var heat_color = Color.LIGHT_GRAY
+		if heat > heat_limit:
+			heat_color = Color(1, 0.4, 0.3)  # Überhitzung -> rot
+		var heat_text = "Hitze: %d/%d" % [heat, heat_limit]
+		draw_string(ThemeDB.fallback_font, Vector2(160, 55), heat_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, heat_color)
+
+	# Firewall-Modifikator anzeigen
+	if gm_ref and gm_ref.firewall and gm_ref.firewall.has_modifier():
+		var fw = gm_ref.firewall
+		var mod_text = "FIREWALL: %s (%s)" % [fw.modifier_name, fw.modifier_desc]
+		draw_string(ThemeDB.fallback_font, Vector2(300, 55), mod_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(1, 0.5, 0.5))
 	
 	# Brett zeichnen
 	for row in range(6):  # Wir zeichnen 6 Zeilen für bessere Optik (2. Reihe später)
@@ -96,19 +118,25 @@ func _draw() -> void:
 	draw_string(ThemeDB.fallback_font, Vector2(20, legend_y), "Legende:", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.WHITE)
 	
 	var legend_items = [
-		[Component.ComponentType.CPU, "CPU (+5, 2W)"],
-		[Component.ComponentType.GPU, "GPU (x2, 5W)"],
-		[Component.ComponentType.LOOP, "LOOP (+10, 3W)"],
-		[Component.ComponentType.NPU, "NPU (+3/CPU, 4W)"],
-		[Component.ComponentType.TRACE, "TRACE (=, 0W)"],
+		[Component.ComponentType.CPU, "CPU +5 (2W,1H)"],
+		[Component.ComponentType.GPU, "GPU x2+CPU (5W,3H)"],
+		[Component.ComponentType.LOOP, "LOOP wiederholt (3W,2H)"],
+		[Component.ComponentType.NPU, "NPU +3/CPU (4W,2H)"],
+		[Component.ComponentType.RAM, "RAM +2/Feld (3W,2H)"],
+		[Component.ComponentType.CAP, "CAP x1.5 (4W,2H)"],
+		[Component.ComponentType.OC, "OC x3 (6W,5H)"],
+		[Component.ComponentType.COOL, "COOL -Hitze (1W,0H)"],
+		[Component.ComponentType.TRACE, "TRACE = (0W,0H)"],
 	]
-	
+
+	# 2 Zeilen à ~5 Einträge, damit alles passt
+	var per_row = 5
 	for i in range(legend_items.size()):
-		var lx = 20 + i * 120
-		var ly = legend_y + 25
+		var lx = 20 + (i % per_row) * 150
+		var ly = legend_y + 25 + int(i / per_row) * 24
 		var lcolor = COLORS[legend_items[i][0]]
 		draw_rect(Rect2(lx, ly - 12, 16, 16), lcolor, true)
-		draw_string(ThemeDB.fallback_font, Vector2(lx + 20, ly + 5), legend_items[i][1], HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color.LIGHT_GRAY)
+		draw_string(ThemeDB.fallback_font, Vector2(lx + 20, ly + 5), legend_items[i][1], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.LIGHT_GRAY)
 
 
 func _gui_input(event: InputEvent) -> void:

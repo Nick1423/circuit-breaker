@@ -45,21 +45,29 @@ func generate_offerings(round_number: int) -> void:
 		offers.append(Offer.new(type, final_price))
 
 
-# Gibt einen zufälligen Bauteil-Typ zurück (seltenere = höhere Stufen)
+# Gibt einen zufälligen Bauteil-Typ zurück (seltenere = stärkere Bauteile)
 func _get_random_component() -> Component.ComponentType:
 	var roll = randf()
-	
-	# TRACE: 20%, CPU: 35%, GPU: 15%, LOOP: 20%, NPU: 10%
-	if roll < 0.20:
+
+	# Häufig -> selten
+	if roll < 0.12:
 		return Component.ComponentType.TRACE
-	elif roll < 0.55:
+	elif roll < 0.42:
 		return Component.ComponentType.CPU
-	elif roll < 0.70:
-		return Component.ComponentType.GPU
-	elif roll < 0.90:
-		return Component.ComponentType.LOOP
-	else:
+	elif roll < 0.52:
+		return Component.ComponentType.COOL
+	elif roll < 0.64:
+		return Component.ComponentType.RAM
+	elif roll < 0.74:
+		return Component.ComponentType.CAP
+	elif roll < 0.82:
 		return Component.ComponentType.NPU
+	elif roll < 0.91:
+		return Component.ComponentType.LOOP
+	elif roll < 0.97:
+		return Component.ComponentType.GPU
+	else:
+		return Component.ComponentType.OC
 
 
 # Gibt den Basis-Preis für einen Bauteil-Typ zurück
@@ -69,12 +77,20 @@ func _get_base_price(type: Component.ComponentType) -> int:
 			return 1
 		Component.ComponentType.CPU:
 			return 3
-		Component.ComponentType.GPU:
-			return 8
-		Component.ComponentType.LOOP:
+		Component.ComponentType.COOL:
+			return 2
+		Component.ComponentType.RAM:
+			return 4
+		Component.ComponentType.CAP:
 			return 5
 		Component.ComponentType.NPU:
 			return 6
+		Component.ComponentType.LOOP:
+			return 5
+		Component.ComponentType.GPU:
+			return 8
+		Component.ComponentType.OC:
+			return 10
 	return 1
 
 
@@ -120,5 +136,7 @@ func print_shop() -> void:
 	print("Angebote:")
 	for i in range(offers.size()):
 		var offer = offers[i]
-		print("  [", i, "] ", offer.name, " - ", offer.price, " Geld")
+		var w = Component.get_watt_cost(offer.component_type)
+		var h = Component.get_heat(offer.component_type)
+		print("  [", i, "] ", offer.name, " - ", offer.price, " Geld  (", w, "W, ", h, "H)")
 	print("==========================")

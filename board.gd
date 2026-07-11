@@ -42,7 +42,7 @@ func _init_board() -> void:
 # Ein leerer Platz wird als "." dargestellt, Bauteile als Buchstabe.
 func print_board() -> void:
 	print("=== Spielfeld (", BOARD_WIDTH, "x", BOARD_HEIGHT, ") ===")
-	print("Watt-Budget: ", get_used_watt(), "/", watt_budget)
+	print("Watt-Budget: ", get_used_watt(), "/", watt_budget, "  |  Hitze: ", get_total_heat())
 	print()
 	
 	for row in range(BOARD_HEIGHT):
@@ -113,19 +113,27 @@ func simulate_packet_flow(row: int) -> int:
 	if row < 0 or row >= BOARD_HEIGHT:
 		print("FEHLER: Ungültige Zeile ", row)
 		return 0
-	
+
 	var packet_value = 1  # Startwert
-	
-	print("  Paket startet mit Wert ", packet_value, " in Zeile ", row)
-	
+
 	for col in range(BOARD_WIDTH):
 		var component = board[row][col]
-		if component != null:
-			var before = packet_value
+		if component == null:
+			continue
+
+		if component == Component.ComponentType.LOOP:
+			# LOOP: wiederholt alle Bauteile LINKS davon in dieser Zeile einmal.
+			# (LOOP/Kühler in diesem Segment werden übersprungen -> keine Endlos-Explosion)
+			for c2 in range(col):
+				var lc = board[row][c2]
+				if lc != null and lc != Component.ComponentType.LOOP and lc != Component.ComponentType.COOL:
+					packet_value = Component.process_packet(lc, packet_value, self, row, c2)
+		elif component == Component.ComponentType.COOL:
+			# Kühler hat keinen Paket-Effekt (wirkt nur auf Hitze)
+			pass
+		else:
 			packet_value = Component.process_packet(component, packet_value, self, row, col)
-			print("    Spalte ", col, ": ", Component.get_type_name(component), " -> ", before, " -> ", packet_value)
-	
-	print("  Paket-Endwert: ", packet_value)
+
 	return packet_value
 
 
@@ -144,6 +152,28 @@ func get_used_watt() -> int:
 			var comp = board[row][col]
 			if comp != null:
 				total += Component.get_watt_cost(comp)
+	return total
+
+
+# Gibt die gesamte erzeugte Hitze des Bretts zurück.
+# Jeder benachbarte Kühler senkt die Hitze eines Bauteils um COOLER_STRENGTH (min 0).
+func get_total_heat() -> int:
+	var total = 0
+	var deltas = [[-1, 0], [1, 0], [0, -1], [0, 1]]
+	for row in range(BOARD_HEIGHT):
+		for col in range(BOARD_WIDTH):
+			var comp = board[row][col]
+			if comp == null:
+				continue
+			var h = Component.get_heat(comp)
+			for d in deltas:
+				var nr = row + d[0]
+				var nc = col + d[1]
+				if _is_in_bounds(nc, nr) and board[nr][nc] == Component.ComponentType.COOL:
+					h -= Component.COOLER_STRENGTH
+			if h < 0:
+				h = 0
+			total += h
 	return total
 
 

@@ -5,7 +5,6 @@ extends Node
 
 const Component = preload("res://component.gd")
 const Firewall = preload("res://firewall.gd")
-const Packet = preload("res://packet.gd")
 const GameShop = preload("res://shop.gd")
 const Shop = GameShop
 const Inventory = preload("res://inventory.gd")
@@ -133,20 +132,48 @@ func send_all_packets() -> void:
 	
 	phase = GamePhase.SEND
 	_redraw_ui()
-	
+
 	print("=== PAKETE WERDEN GESENDET ===")
-	var total_damage = 0
-	
+	var raw_total = 0
+
 	for i in range(firewall.packets_per_round):
 		var row = i % board.BOARD_HEIGHT
-		var damage = _send_single_packet(row)
-		total_damage += damage
-	
+		var value = _send_single_packet(row)
+
+		# Modifikator: Störsender -> tote Zeile zählt nicht
+		if firewall.dead_row == row:
+			print("  Zeile ", row, ": BLOCKIERT (Störsender) -> 0")
+			continue
+
+		# Modifikator: Schild -> Schaden pro Paket gedeckelt
+		if firewall.packet_damage_cap > 0 and value > firewall.packet_damage_cap:
+			print("  Zeile ", row, ": ", value, " -> gedeckelt auf ", firewall.packet_damage_cap)
+			value = firewall.packet_damage_cap
+		else:
+			print("  Zeile ", row, ": ", value, " Schaden")
+
+		raw_total += value
+		stats.packets_sent += 1
+		if value > stats.best_single_packet:
+			stats.best_single_packet = value
+
+	# Überhitzung: Malus auf den Gesamtschaden
+	var total_heat = board.get_total_heat()
+	var total_damage = raw_total
+	if total_heat > firewall.heat_limit:
+		var penalty = clampf(float(firewall.heat_limit) / float(total_heat), 0.3, 1.0)
+		# Brandmelder-Modifikator verstärkt den Verlust
+		penalty = clampf(1.0 - (1.0 - penalty) * firewall.overheat_factor, 0.15, 1.0)
+		total_damage = int(raw_total * penalty)
+		print("!! ÜBERHITZUNG !! Hitze ", total_heat, "/", firewall.heat_limit, " -> Schaden x%.2f" % penalty)
+
+	firewall.take_damage(total_damage)
+
 	phase = GamePhase.RESULT
 	print("Gesamtschaden: ", total_damage)
 	score += total_damage
 	stats.total_damage += total_damage
-	
+
 	if not firewall.is_alive():
 		print("*** FIREWALL ZERSTÖRT! ***")
 		stats.firewalls_destroyed += 1
@@ -158,18 +185,10 @@ func send_all_packets() -> void:
 		show_game_over()
 
 
+# Berechnet den rohen Paketwert einer Zeile (inkl. LOOP-Wiederholung und
+# Nachbar-Synergien). Schaden/Modifikatoren werden in send_all_packets angewandt.
 func _send_single_packet(row: int) -> int:
-	var value = 1
-	for col in range(board.BOARD_WIDTH):
-		var comp = board.board[row][col]
-		if comp != null:
-			value = Component.process_packet(comp, value, board, row, col)
-	firewall.take_damage(value)
-	stats.packets_sent += 1
-	if value > stats.best_single_packet:
-		stats.best_single_packet = value
-	print("  Zeile ", row, ": ", value, " Schaden")
-	return value
+	return board.simulate_packet_flow(row)
 
 
 # =============================================
@@ -274,6 +293,7 @@ func _show_help() -> void:
 		GamePhase.BUILD:
 			print("place CPU 0 0 | remove 0 0 | select GPU")
 			print("invuse 0 1 1 | inv | send | board | clear")
+			print("Bauteile: CPU GPU LOOP NPU RAM CAP OC COOL TRACE")
 		GamePhase.SHOP:
 			print("buy <nr> | next | inv")
 		GamePhase.GAMEOVER:
@@ -293,7 +313,9 @@ func _cmd_place(parts: Array) -> void:
 	var type_map = {
 		"CPU": Component.ComponentType.CPU, "GPU": Component.ComponentType.GPU,
 		"LOOP": Component.ComponentType.LOOP, "TRACE": Component.ComponentType.TRACE,
-		"NPU": Component.ComponentType.NPU
+		"NPU": Component.ComponentType.NPU, "RAM": Component.ComponentType.RAM,
+		"CAP": Component.ComponentType.CAP, "OC": Component.ComponentType.OC,
+		"COOL": Component.ComponentType.COOL
 	}
 	var t = parts[1].to_upper()
 	if not type_map.has(t):
@@ -324,7 +346,9 @@ func _cmd_select(parts: Array) -> void:
 	var type_map = {
 		"CPU": Component.ComponentType.CPU, "GPU": Component.ComponentType.GPU,
 		"LOOP": Component.ComponentType.LOOP, "TRACE": Component.ComponentType.TRACE,
-		"NPU": Component.ComponentType.NPU
+		"NPU": Component.ComponentType.NPU, "RAM": Component.ComponentType.RAM,
+		"CAP": Component.ComponentType.CAP, "OC": Component.ComponentType.OC,
+		"COOL": Component.ComponentType.COOL
 	}
 	var key = parts[1].to_upper()
 	if type_map.has(key):
@@ -356,7 +380,7 @@ func _cmd_invuse(parts: Array) -> void:
 
 func _cmd_status() -> void:
 	print("Runde: ", current_round, " | Geld: ", money, " | Score: ", score)
-	print("Watt: ", board.get_used_watt(), "/", board.watt_budget)
+	print("Watt: ", board.get_used_watt(), "/", board.watt_budget, " | Hitze: ", board.get_total_heat())
 	print("Ausgewählt: ", Component.get_type_name(selected_component))
 	print("Inventar: ", inventory.get_item_count(), "/", inventory.max_size)
 	if firewall:
