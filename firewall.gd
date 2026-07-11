@@ -30,8 +30,9 @@ var overheat_factor: float = 1.0   # >1 verstärkt Überhitzungs-Malus
 
 func _init(p_level: int):
 	level = p_level
-	max_health = int(round(12.0 * pow(1.5, p_level - 1)))
-	reward_watt = 3 + p_level
+	# HP fürs Level-Modell: in bis zu 3 Runden (kumulativ) zu knacken.
+	max_health = int(round(35.0 * pow(1.8, p_level - 1)))
+	reward_watt = 5 + p_level * 2
 	packets_per_round = 3 + int(floor(p_level / 2.0))
 	heat_limit = 6 + p_level
 

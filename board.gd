@@ -1,7 +1,6 @@
 extends Node2D
 
-const Component = preload("res://component.gd")
-const Block = preload("res://block.gd")
+# Component und Block sind über class_name global verfügbar – kein preload nötig.
 
 # Circuit Breaker - Spielfeld (Board)
 # 6x4-Raster. Jede Zelle enthält einen Block (mit Ein-/Ausgang) oder null.

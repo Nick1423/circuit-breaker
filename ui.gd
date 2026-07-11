@@ -9,34 +9,23 @@
 
 extends Control
 
-const Component = preload("res://component.gd")
-const Block = preload("res://block.gd")
+# Component und Block sind über class_name global verfügbar – kein preload nötig.
 
-# ---- Farbpalette ----
-const C_BG      = Color(0.055, 0.065, 0.09)
-const C_PANEL   = Color(0.10, 0.12, 0.16)
-const C_PANEL2  = Color(0.14, 0.17, 0.22)
-const C_ACCENT  = Color(0.20, 0.85, 0.80)
-const C_ACCENT2 = Color(0.30, 0.85, 0.50)
-const C_DANGER  = Color(0.95, 0.35, 0.35)
-const C_WARN    = Color(0.95, 0.75, 0.25)
-const C_TEXT    = Color(0.90, 0.94, 0.97)
-const C_MUTED   = Color(0.58, 0.64, 0.72)
-const C_CELL    = Color(0.13, 0.15, 0.19)
+# ---- Stil (Palette & Bau-Helfer stehen in ui_style.gd) ----
+const Style = preload("res://ui_style.gd")
+const C_BG      = Style.BG
+const C_PANEL   = Style.PANEL
+const C_PANEL2  = Style.PANEL2
+const C_ACCENT  = Style.ACCENT
+const C_ACCENT2 = Style.ACCENT2
+const C_DANGER  = Style.DANGER
+const C_WARN    = Style.WARN
+const C_TEXT    = Style.TEXT
+const C_MUTED   = Style.MUTED
+const C_CELL    = Style.CELL
+const COMP_COLORS = Style.COMP_COLORS
 
 const CELL_SIZE := 90
-
-const COMP_COLORS = {
-	Component.ComponentType.TRACE:    Color(0.45, 0.45, 0.50),  # grau
-	Component.ComponentType.CPU:      Color(0.22, 0.55, 0.90),  # blau
-	Component.ComponentType.RAM:      Color(0.60, 0.40, 0.85),  # violett
-	Component.ComponentType.GPU:      Color(0.90, 0.42, 0.20),  # orange
-	Component.ComponentType.NPU:      Color(0.15, 0.75, 0.68),  # türkis
-	Component.ComponentType.CACHE:    Color(0.30, 0.80, 0.45),  # grün
-	Component.ComponentType.HEATSINK: Color(0.40, 0.75, 0.95),  # hellblau
-	Component.ComponentType.PSU:      Color(0.95, 0.80, 0.25),  # gelb
-	Component.ComponentType.MAINBOARD: Color(0.55, 0.62, 0.68), # stahlgrau
-}
 
 var gm = null
 
@@ -121,47 +110,21 @@ func _ready() -> void:
 #  STYLE-HELFER
 # =============================================================
 
+# Dünne Weiterleitungen an Style – die eigentliche Definition liegt in ui_style.gd.
 func _sb(bg: Color, border_col := Color(0,0,0,0), border_w := 0, radius := 8, pad := 8) -> StyleBoxFlat:
-	var s := StyleBoxFlat.new()
-	s.bg_color = bg
-	if border_w > 0:
-		s.set_border_width_all(border_w)
-		s.border_color = border_col
-	s.set_corner_radius_all(radius)
-	s.content_margin_left = pad
-	s.content_margin_right = pad
-	s.content_margin_top = pad
-	s.content_margin_bottom = pad
-	return s
+	return Style.sb(bg, border_col, border_w, radius, pad)
 
 func _panel(bg := C_PANEL, border := C_PANEL2, bw := 1, radius := 10) -> PanelContainer:
-	var p := PanelContainer.new()
-	p.add_theme_stylebox_override("panel", _sb(bg, border, bw, radius, 12))
-	return p
+	return Style.panel(bg, border, bw, radius)
 
-func _label(text := "", size := 16, col := C_TEXT) -> Label:
-	var l := Label.new()
-	l.text = text
-	l.add_theme_font_size_override("font_size", size)
-	l.add_theme_color_override("font_color", col)
-	return l
+func _label(text := "", fsize := 16, col := C_TEXT) -> Label:
+	return Style.label(text, fsize, col)
 
 func _style_button(btn: Button, base: Color, txt := C_TEXT) -> void:
-	btn.add_theme_stylebox_override("normal", _sb(base, base.lightened(0.15), 1, 8, 10))
-	btn.add_theme_stylebox_override("hover", _sb(base.lightened(0.12), C_ACCENT, 2, 8, 10))
-	btn.add_theme_stylebox_override("pressed", _sb(base.darkened(0.15), C_ACCENT, 2, 8, 10))
-	btn.add_theme_stylebox_override("disabled", _sb(base.darkened(0.4), base.darkened(0.25), 1, 8, 10))
-	btn.add_theme_stylebox_override("focus", _sb(Color(0,0,0,0)))
-	btn.add_theme_color_override("font_color", txt)
-	btn.add_theme_color_override("font_hover_color", Color.WHITE)
+	Style.style_button(btn, base, txt)
 
 func _make_bar(fill: Color) -> ProgressBar:
-	var b := ProgressBar.new()
-	b.show_percentage = false
-	b.custom_minimum_size = Vector2(0, 20)
-	b.add_theme_stylebox_override("background", _sb(Color(0.05,0.06,0.08), Color(0,0,0,0), 0, 6, 0))
-	b.add_theme_stylebox_override("fill", _sb(fill, Color(0,0,0,0), 0, 6, 0))
-	return b
+	return Style.make_bar(fill)
 
 func _full(node: Control) -> void:
 	node.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -488,7 +451,7 @@ func _build_shop() -> void:
 	shop_reroll_btn.pressed.connect(_on_reroll)
 	btn_row.add_child(shop_reroll_btn)
 	var next_btn := Button.new()
-	next_btn.text = "Nächste Runde  >"
+	next_btn.text = "Weiter  >"
 	next_btn.custom_minimum_size = Vector2(0, 50)
 	next_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	next_btn.add_theme_font_size_override("font_size", 18)
@@ -517,7 +480,7 @@ func _build_reward() -> void:
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 14)
 	panel.add_child(v)
-	var t := _label("FIREWALL GEKNACKT — wähle ein Relikt", 24, C_ACCENT2)
+	var t := _label("LEVEL GESCHAFFT — wähle ein Upgrade", 24, C_ACCENT2)
 	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(t)
 	reward_cards = HBoxContainer.new()
@@ -761,7 +724,7 @@ func _on_play() -> void:
 func _on_next() -> void:
 	if gm.phase == gm.GamePhase.SHOP:
 		selected_inv_index = -1
-		gm.start_round()
+		gm.advance_from_shop()
 		refresh()
 
 func _on_buy(index: int) -> void:
@@ -841,11 +804,40 @@ func _on_send() -> void:
 	var res = gm.compute_send()
 	_animating = true
 	send_btn.disabled = true
-	await _animate_packet(res)
-	await _animate_firewall_hit(res)
+	await _play_send(res)
 	_animating = false
 	gm.apply_send(res)
 	refresh()
+
+
+# Spielt den kompletten Sende-Vorgang ab: pro Paket einmal den Pfad entlang und
+# einen Firewall-Treffer. Die Schadens-Anteile summieren sich exakt auf total_damage.
+func _play_send(res: Dictionary) -> void:
+	var path: Array = res.get("path", [])
+	if path.is_empty():
+		_set_msg("Kein gültiger Pfad. " + String(res.get("path_error", "")))
+		await get_tree().create_timer(0.5).timeout
+		return
+	var packets = max(1, int(res.get("packets", 1)))
+	var total = int(res.get("total_damage", 0))
+	var shares = _split_damage(total, packets)
+	var hp = fw_bar.value  # HP-Balkenwert vor dem Schaden
+	for i in range(packets):
+		_set_msg("Paket %d / %d unterwegs …" % [i + 1, packets])
+		var target_hp = max(0.0, hp - shares[i])
+		await _travel_and_hit(res, shares[i], target_hp, i == 0)
+		hp = target_hp
+
+
+# Verteilt den Gesamtschaden gleichmäßig auf n Pakete (Summe bleibt = total).
+func _split_damage(total: int, n: int) -> Array:
+	var arr = []
+	@warning_ignore("integer_division")
+	var base = total / n
+	var rem = total - base * n
+	for i in range(n):
+		arr.append(base + (1 if i < rem else 0))
+	return arr
 
 func _cell_center(c: int, r: int) -> Vector2:
 	var node: Control = cell_root[r][c]
@@ -880,99 +872,61 @@ func _spawn_float(text: String, gpos: Vector2, col: Color) -> void:
 	t.parallel().tween_property(l, "modulate:a", 0.0, 0.6)
 	t.tween_callback(l.queue_free)
 
-func _animate_packet(res: Dictionary) -> void:
+# Ein einzelnes Paket: läuft den Pfad entlang, zeigt seinen Schaden und schlägt
+# in die Firewall ein (HP-Balken auf target_hp). detailed=true nur beim 1. Paket
+# (mit "+X"-Einblendungen), die weiteren laufen schneller und ruhiger.
+func _travel_and_hit(res: Dictionary, share: int, target_hp: float, detailed: bool) -> void:
 	var path: Array = res.get("path", [])
 	if path.is_empty():
-		_set_msg("Kein gültiger Pfad. " + String(res.get("path_error", "")))
-		await get_tree().create_timer(0.4).timeout
 		return
 
-	var token := _make_packet_token(1)
+	var token := _make_packet_token(int(path[0].before))
 	add_child(token)
 	var lbl: Label = token.get_child(0)
-	var first = path[0]
-	token.global_position = _cell_center(first.col, first.row) - token.size / 2.0
-	lbl.text = str(int(first.before))
+	token.global_position = _cell_center(path[0].col, path[0].row) - token.size / 2.0
 
+	var step_time = 0.10 if detailed else 0.06
 	for step in path:
 		var target = _cell_center(step.col, step.row) - token.size / 2.0
 		var mt := create_tween()
-		mt.tween_property(token, "global_position", target, 0.22).set_trans(Tween.TRANS_SINE)
+		mt.tween_property(token, "global_position", target, step_time).set_trans(Tween.TRANS_SINE)
 		await mt.finished
-		var after := int(step.after)
-		var before := int(step.before)
-		lbl.text = str(after)
-		if after > before:
-			_spawn_float("+%d" % (after - before), _cell_center(step.col, step.row), C_ACCENT2)
-			var pt := create_tween()
-			pt.tween_property(token, "scale", Vector2(1.3, 1.3), 0.08)
-			pt.tween_property(token, "scale", Vector2(1, 1), 0.08)
-			await pt.finished
+		lbl.text = str(int(step.after))
+		if detailed and int(step.after) > int(step.before):
+			_spawn_float("+%d" % (int(step.after) - int(step.before)), _cell_center(step.col, step.row), C_ACCENT2)
 
-	# Nach dem Pfad: Multiplikatoren sichtbar machen (Durchbruch + Mainboard)
+	# Durchbruch sichtbar machen, dann auf den echten Paket-Schaden setzen
 	var last = path[path.size() - 1]
-	var last_center = _cell_center(last.col, last.row)
-	var per_packet = int(res.get("per_packet", 0))
-	var path_value = int(res.get("path_value", 0))
-	if per_packet > path_value:
-		lbl.text = str(per_packet)
-		if res.get("reached_end", false):
-			_spawn_float("Durchbruch!", last_center + Vector2(0, -22), C_ACCENT)
-		var bt := create_tween()
-		bt.tween_property(token, "scale", Vector2(1.4, 1.4), 0.1)
-		bt.tween_property(token, "scale", Vector2(1, 1), 0.1)
-		await bt.finished
+	if res.get("reached_end", false) and detailed:
+		_spawn_float("Durchbruch!", _cell_center(last.col, last.row) + Vector2(0, -22), C_ACCENT)
+	lbl.text = str(share)
+	var bt := create_tween()
+	bt.tween_property(token, "scale", Vector2(1.35, 1.35), 0.08)
+	bt.tween_property(token, "scale", Vector2(1, 1), 0.08)
+	await bt.finished
 
-	if res.get("reached_end", false):
-		var off = last_center - token.size / 2.0 + Vector2(150, 0)
-		var et := create_tween()
-		et.tween_property(token, "global_position", off, 0.25)
-		et.parallel().tween_property(token, "modulate:a", 0.0, 0.25)
-		await et.finished
-	else:
-		await get_tree().create_timer(0.15).timeout
-
-	token.queue_free()
-
-
-# Der Einschlag an der Firewall: Paket fliegt in den Balken, der HP-Balken
-# sackt ab, dazu Schadenszahl, Flash und ein kurzer "Punch".
-func _animate_firewall_hit(res: Dictionary) -> void:
-	var dmg := int(res.get("total_damage", 0))
-	if dmg <= 0 or fw_bar == null:
-		await get_tree().create_timer(0.1).timeout
+	# In die Firewall schießen
+	if fw_bar == null:
+		token.queue_free()
 		return
-
-	# Paket-Token (zeigt den GESAMTschaden) vom rechten Board-Rand in die Firewall schießen
-	var packets := int(res.get("packets", 1))
-	var token := _make_packet_token(dmg)
-	add_child(token)
-	token.global_position = _cell_center(5, 0) - token.size / 2.0
-	if packets > 1:
-		_spawn_float("× %d Pakete" % packets, _cell_center(5, 0) + Vector2(0, -26), C_WARN)
-	var target = fw_bar.global_position + fw_bar.size / 2.0 - token.size / 2.0
+	var fw_target = fw_bar.global_position + fw_bar.size / 2.0 - token.size / 2.0
 	var ft := create_tween()
-	ft.tween_property(token, "global_position", target, 0.28).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+	ft.tween_property(token, "global_position", fw_target, 0.20).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
 	await ft.finished
 	token.queue_free()
 
-	# Einschlag
-	var old_hp = fw_bar.value
-	var new_hp = max(0, old_hp - dmg)
-	_spawn_float("-%d" % dmg, fw_bar.global_position + Vector2(fw_bar.size.x * 0.5, -8), C_DANGER)
-
+	# Einschlag: Schadenszahl, Punch, Flash, HP-Balken senken
+	_spawn_float("-%d" % share, fw_bar.global_position + Vector2(fw_bar.size.x * 0.5, -8), C_DANGER)
 	fw_bar.pivot_offset = fw_bar.size / 2.0
 	var punch := create_tween()
-	punch.tween_property(fw_bar, "scale", Vector2(1.05, 1.25), 0.06)
-	punch.tween_property(fw_bar, "scale", Vector2(1, 1), 0.18)
-
+	punch.tween_property(fw_bar, "scale", Vector2(1.04, 1.2), 0.05)
+	punch.tween_property(fw_bar, "scale", Vector2(1, 1), 0.14)
 	if fw_panel:
 		var flash := create_tween()
-		flash.tween_property(fw_panel, "modulate", Color(1.7, 1.2, 1.2), 0.06)
-		flash.tween_property(fw_panel, "modulate", Color(1, 1, 1), 0.22)
-
+		flash.tween_property(fw_panel, "modulate", Color(1.6, 1.2, 1.2), 0.05)
+		flash.tween_property(fw_panel, "modulate", Color(1, 1, 1), 0.18)
 	var hp := create_tween()
-	hp.tween_property(fw_bar, "value", new_hp, 0.4).set_trans(Tween.TRANS_CUBIC)
+	hp.tween_property(fw_bar, "value", target_hp, 0.22).set_trans(Tween.TRANS_CUBIC)
 	await hp.finished
 
 
@@ -1016,7 +970,7 @@ func refresh() -> void:
 			preview_lbl.text = ""
 
 	# HUD
-	lbl_round.text = ("Vorbereitung" if gm.current_round == 0 else "Runde %d" % gm.current_round)
+	lbl_round.text = ("Vorbereitung" if gm.level == 0 else "Level %d/%d  •  Runde %d/%d" % [gm.level, gm.WIN_LEVEL, gm.round_in_level, gm.ROUNDS_PER_LEVEL])
 	lbl_money.text = "Geld: %d" % gm.money
 	lbl_score.text = "Score: %d" % gm.score
 
@@ -1065,7 +1019,7 @@ func refresh() -> void:
 	if phase == gm.GamePhase.VICTORY:
 		victory_score.text = "Score: %d" % gm.score
 	if phase == gm.GamePhase.GAMEOVER:
-		over_round.text = "Erreichte Runde: %d" % gm.current_round
+		over_round.text = "Erreichtes Level: %d / %d" % [gm.level, gm.WIN_LEVEL]
 		over_score.text = "Score: %d" % gm.score
 		over_high.text = ("* NEUER HIGHSCORE *" if (gm.score >= gm.highscore and gm.score > 0) else "Highscore: %d" % gm.highscore)
 	if dialog_root and dialog_root.visible:
@@ -1086,10 +1040,11 @@ func _update_preview_label(pv: Dictionary) -> void:
 	var dmg = int(pv.get("total_damage", 0))
 	var reached = pv.get("reached_end", false)
 	var oh = "  •  ÜBERHITZT" if pv.get("overheated", false) else ""
-	var status = "Ziel erreicht" if reached else "Ziel NICHT erreicht"
-	preview_lbl.text = "Vorschau: %d × %d Pakete = ~%d Schaden  •  %s%s" % [per_packet, packets, dmg, status, oh]
+	var reach_hint = "" if reached else "  (Ziel nicht erreicht)"
 	var win = gm.firewall != null and dmg >= gm.firewall.health
-	preview_lbl.add_theme_color_override("font_color", C_ACCENT2 if win else (C_WARN if reached else C_DANGER))
+	var verdict = "reicht zum Knacken" if win else "reicht NICHT – sonst Game Over"
+	preview_lbl.text = "Vorschau: %d × %d Pakete = ~%d Schaden  •  %s%s%s" % [per_packet, packets, dmg, verdict, reach_hint, oh]
+	preview_lbl.add_theme_color_override("font_color", C_ACCENT2 if win else C_DANGER)
 
 
 func _refresh_cells() -> void:

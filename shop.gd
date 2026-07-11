@@ -3,15 +3,15 @@
 
 class_name GameShop
 
-const Component = preload("res://component.gd")
+# Component ist über class_name global verfügbar – kein preload nötig.
 
 # Ein Angebot im Shop
 class Offer:
-	var component_type: Component.ComponentType
+	var component_type: int  # Component.ComponentType
 	var price: int
 	var name: String
-	
-	func _init(p_type: Component.ComponentType, p_price: int):
+
+	func _init(p_type: int, p_price: int):
 		component_type = p_type
 		price = p_price
 		name = Component.get_type_name(p_type)
@@ -43,6 +43,28 @@ func generate_offerings(round_number: int) -> void:
 		if final_price < 1:
 			final_price = 1
 		offers.append(Offer.new(type, final_price))
+
+	_guarantee_damage_offer()
+
+
+# Fairness: sorgt dafür, dass mindestens ein Bauteil mit Schadenseffekt
+# (CPU/GPU/RAM/NPU) im Angebot ist – sonst wäre der Shop unspielbar.
+func _guarantee_damage_offer() -> void:
+	var damage_types = [
+		Component.ComponentType.CPU, Component.ComponentType.GPU,
+		Component.ComponentType.RAM, Component.ComponentType.NPU,
+	]
+	for o in offers:
+		if o.component_type in damage_types:
+			return
+	if offers.is_empty():
+		return
+	var idx = randi() % offers.size()
+	var t = damage_types[randi() % damage_types.size()]
+	var price = int(_get_base_price(t) * price_multiplier)
+	if price < 1:
+		price = 1
+	offers[idx] = Offer.new(t, price)
 
 
 # Gibt einen zufälligen Bauteil-Typ zurück (seltenere = stärkere Bauteile)

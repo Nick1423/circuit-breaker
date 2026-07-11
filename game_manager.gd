@@ -3,11 +3,7 @@
 
 extends Node
 
-const Component = preload("res://component.gd")
-const Firewall = preload("res://firewall.gd")
-const GameShop = preload("res://shop.gd")
-const Shop = GameShop
-const Inventory = preload("res://inventory.gd")
+# GameShop, Component, Firewall, Inventory sind über class_name global verfügbar.
 
 # Node-Referenzen
 @onready var board: Node2D = $"../Board"
@@ -16,8 +12,10 @@ const Inventory = preload("res://inventory.gd")
 enum GamePhase { HOMESCREEN, BUILD, SEND, RESULT, REWARD, SHOP, GAMEOVER, VICTORY }
 var phase: GamePhase = GamePhase.HOMESCREEN
 
-# Runde, ab der der Run gewonnen ist
-const WIN_ROUND: int = 10
+# Level-Struktur: 1 Level = 1 Firewall, die in bis zu ROUNDS_PER_LEVEL Runden
+# geknackt werden muss (Schaden summiert sich). WIN_LEVEL Level = Sieg.
+const ROUNDS_PER_LEVEL: int = 3
+const WIN_LEVEL: int = 5
 
 # Reliktarten (dauerhafte Run-Boni)
 enum Relic { STARTSPANNUNG, BUSBREITE, DURCHBRUCH, KUEHLPASTE, EFFIZIENZ }
@@ -43,9 +41,13 @@ var reward_choices: Array = []
 var money: int = 5
 var score: int = 0
 var highscore: int = 0
-var current_round: int = 0
+var level: int = 0            # aktuelles Level (1..WIN_LEVEL)
+var round_in_level: int = 0   # Runde innerhalb des Levels (1..ROUNDS_PER_LEVEL)
+var current_round: int = 0    # Gesamtzahl gespielter Runden (für Statistik)
 var base_watt_budget: int = 10
 var reroll_cost: int = 3
+# Steuert, was der "Weiter"-Button im Shop auslöst: "start_level" oder "next_round"
+var after_shop: String = "start_level"
 
 # Kurze Rückmeldung für die UI (Ergebnis, Kauf, Fehler)
 var ui_message: String = ""
@@ -54,11 +56,8 @@ var ui_message: String = ""
 var firewall: Firewall = null
 
 # Shop & Inventar
-var shop: Shop = null
+var shop: GameShop = null
 var inventory: Inventory = null
-
-# Aktuell ausgewählter Bauteil-Typ
-var selected_component: Component.ComponentType = Component.ComponentType.CPU
 
 # Statistik für den aktuellen Run
 var stats = {
@@ -73,7 +72,7 @@ var stats = {
 
 func _ready() -> void:
 	randomize()
-	shop = Shop.new()
+	shop = GameShop.new()
 	inventory = Inventory.new()
 	_redraw_ui()
 	show_homescreen()
@@ -109,7 +108,10 @@ func show_homescreen() -> void:
 func start_new_run() -> void:
 	money = 12
 	score = 0
+	level = 0
+	round_in_level = 0
 	current_round = 0
+	after_shop = "start_level"
 	firewall = null
 	relics = []
 	reward_choices = []
@@ -125,31 +127,52 @@ func start_new_run() -> void:
 		inventory.add_item(Component.ComponentType.TRACE)
 	board.clear_board()
 	print("=== NEUER RUN GESTARTET === Start-Geld: ", money)
-	ui_message = "Du hast 5 Leiterbahnen. Kaufe Bauteile, dann starte Runde 1."
-	# Run beginnt im Shop: erst Bausteine kaufen, dann 'Nächste Runde'.
+	ui_message = "Du hast 5 Leiterbahnen. Kaufe Bauteile, dann starte Level 1."
+	# Run beginnt im Shop: erst Bausteine kaufen, dann 'Weiter'.
 	start_shop_phase()
 
 
 # =============================================
-#  RUNDE
+#  LEVEL & RUNDE
 # =============================================
 
-func start_round() -> void:
+# Startet ein neues Level mit einer frischen Firewall (HP steigt pro Level).
+func start_level() -> void:
+	level += 1
+	round_in_level = 1
 	current_round += 1
-	firewall = Firewall.new(current_round)
+	firewall = Firewall.new(level)
 	phase = GamePhase.BUILD
-	
-	var round_bonus = 2 + current_round
-	money += round_bonus
-	board.watt_budget = base_watt_budget + (current_round - 1) * 2
-	ui_message = "Runde %d — platziere Bauteile und sende die Pakete." % current_round
-	
-	print("=== RUNDE ", current_round, " ===")
+	money += 3 + level
+	board.watt_budget = base_watt_budget + (level - 1) * 2
+	ui_message = "Level %d — Runde 1/%d. Knacke die Firewall!" % [level, ROUNDS_PER_LEVEL]
+	print("=== LEVEL ", level, " (Runde 1/", ROUNDS_PER_LEVEL, ") ===")
 	print(firewall.get_status())
-	print("Budget: ", board.watt_budget, "W | Geld: ", money)
-	board.print_board()
-	
 	_redraw_ui()
+
+
+# Nächste Runde innerhalb desselben Levels – die Firewall bleibt bestehen,
+# der bisherige Schaden zählt weiter (kumulativ).
+func next_round() -> void:
+	round_in_level += 1
+	current_round += 1
+	phase = GamePhase.BUILD
+	money += 2
+	var last := round_in_level >= ROUNDS_PER_LEVEL
+	var warn := "   LETZTE RUNDE – sonst Game Over!" if last else ""
+	ui_message = "Level %d — Runde %d/%d.%s" % [level, round_in_level, ROUNDS_PER_LEVEL, warn]
+	print("=== LEVEL ", level, " (Runde ", round_in_level, "/", ROUNDS_PER_LEVEL, ") ===")
+	_redraw_ui()
+
+
+# Wird vom "Weiter"-Button im Shop aufgerufen.
+func advance_from_shop() -> void:
+	if phase != GamePhase.SHOP:
+		return
+	if after_shop == "next_round":
+		next_round()
+	else:
+		start_level()
 
 
 # =============================================
@@ -248,17 +271,26 @@ func apply_send(res: Dictionary) -> void:
 		note += "  (überhitzt!)"
 
 	if not firewall.is_alive():
+		# Level geschafft!
 		stats.firewalls_destroyed += 1
 		money += firewall.reward_watt
-		if current_round >= WIN_ROUND:
-			ui_message = "Alle %d Firewalls geknackt – du hast gewonnen!" % WIN_ROUND
+		if level >= WIN_LEVEL:
+			ui_message = "Alle %d Level geknackt – du hast gewonnen!" % WIN_LEVEL
 			show_victory()
 		else:
-			ui_message = "Firewall zerstört! %d Schaden%s  •  +%d Geld" % [total_damage, note, firewall.reward_watt]
+			ui_message = "Level %d geschafft! %d Schaden%s  •  +%d Geld — wähle ein Upgrade." % [level, total_damage, note, firewall.reward_watt]
+			# Nach Level-Clear: Upgrade wählen -> Shop -> nächstes Level
+			after_shop = "start_level"
 			start_reward_phase()
 	else:
-		ui_message = "Nur %d Schaden%s — Firewall hält (%d/%d HP)." % [total_damage, note, firewall.health, firewall.max_health]
-		show_game_over()
+		# Firewall hält noch
+		if round_in_level >= ROUNDS_PER_LEVEL:
+			ui_message = "Firewall hält nach %d Runden (%d/%d HP) — Game Over." % [ROUNDS_PER_LEVEL, firewall.health, firewall.max_health]
+			show_game_over()
+		else:
+			ui_message = "Runde %d/%d: %d Schaden%s. Firewall bei %d/%d HP — weiter im Shop." % [round_in_level, ROUNDS_PER_LEVEL, total_damage, note, firewall.health, firewall.max_health]
+			after_shop = "next_round"
+			start_shop_phase()
 
 
 # Bequemer Fallback ohne Animation (führt Berechnung + Anwendung sofort aus).

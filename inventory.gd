@@ -1,9 +1,8 @@
 # Circuit Breaker - Inventar-System
 # Verwaltet gekaufte Bauteile, die noch nicht auf dem Brett platziert sind.
 
+class_name Inventory
 extends Node
-
-const Component = preload("res://component.gd")
 
 # Inventar: Liste von ComponentType-Werten
 var items: Array = []
@@ -12,12 +11,8 @@ var items: Array = []
 var max_size: int = 24
 
 
-func _init() -> void:
-	pass
-
-
-# Fügt ein Bauteil zum Inventar hinzu
-func add_item(comp_type: Component.ComponentType) -> bool:
+# Fügt ein Bauteil zum Inventar hinzu (Typ als int / Component.ComponentType)
+func add_item(comp_type: int) -> bool:
 	if items.size() >= max_size:
 		print("Inventar voll!")
 		return false
@@ -27,18 +22,17 @@ func add_item(comp_type: Component.ComponentType) -> bool:
 	return true
 
 
-# Entfernt und gibt ein Bauteil zurück (zum Platzieren)
-func take_item(index: int) -> Component.ComponentType:
+# Entfernt und gibt ein Bauteil zurück (Typ als int, oder -1 wenn ungültig)
+func take_item(index: int) -> int:
 	if index < 0 or index >= items.size():
-		return -1  # Invalid
-	
+		return -1
 	var comp = items[index]
 	items.remove_at(index)
 	return comp
 
 
-# Gibt ein Bauteil zurück ohne es zu entfernen
-func peek_item(index: int) -> Component.ComponentType:
+# Gibt ein Bauteil zurück ohne es zu entfernen (Typ als int, oder -1)
+func peek_item(index: int) -> int:
 	if index < 0 or index >= items.size():
 		return -1
 	return items[index]
