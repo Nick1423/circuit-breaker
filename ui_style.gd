@@ -71,6 +71,26 @@ static func style_button(btn: Button, base: Color, txt := TEXT) -> void:
 	btn.add_theme_color_override("font_hover_color", Color.WHITE)
 
 
+# Schwebendes Vorschau-Bild beim Ziehen eines Bauteils (folgt dem Cursor).
+static func drag_preview(type: int) -> Control:
+	var root := Control.new()
+	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var chip := Panel.new()
+	chip.size = Vector2(74, 54)
+	chip.position = -chip.size / 2.0  # auf dem Cursor zentrieren
+	chip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	chip.add_theme_stylebox_override("panel", sb(COMP_COLORS.get(type, PANEL2), Color.WHITE, 2, 8, 0))
+	var lbl := label("%s\n%s" % [Component.get_short_name(type), Component.get_label(type)], 13, Color.WHITE)
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.size = chip.size
+	lbl.position = chip.position
+	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(chip)
+	root.add_child(lbl)
+	root.modulate = Color(1, 1, 1, 0.9)
+	return root
+
+
 static func make_bar(fill: Color) -> ProgressBar:
 	var b := ProgressBar.new()
 	b.show_percentage = false

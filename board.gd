@@ -2,19 +2,17 @@ extends Node2D
 
 # Component und Block sind über class_name global verfügbar – kein preload nötig.
 
-# Circuit Breaker - Spielfeld (Board)
-# 6x4-Raster. Jede Zelle enthält einen Block (mit Ein-/Ausgang) oder null.
-# Pakete betreten das Board am linken Rand und suchen sich über die Ports
-# ihren Weg nach rechts (siehe simulate_path()).
+# Core Cocker - Spielfeld (Board)
+# 6x4-Raster. Jede Zelle enthält einen Block (fester Eingang links, Ausgang
+# rechts) oder null. Jede ZEILE ist eine eigene "Lane": liegt in Spalte 0 ein
+# Block, startet dort ein Paket und fließt nach rechts durch die lückenlose
+# Kette, bis eine Lücke oder der rechte Rand kommt (siehe simulate_lanes()).
 
 # board[Zeile][Spalte] = Block oder null
 var board: Array = []
 
 const BOARD_WIDTH: int = 6
 const BOARD_HEIGHT: int = 4
-
-# Watt-Budget (nur noch informativ, kein hartes Limit mehr)
-var watt_budget: int = 10
 
 
 func _ready() -> void:
@@ -30,17 +28,6 @@ func _init_board() -> void:
 		board.append(new_row)
 
 
-func print_board() -> void:
-	print("=== Spielfeld (", BOARD_WIDTH, "x", BOARD_HEIGHT, ") ===")
-	print("Hitze: ", get_total_heat())
-	for row in range(BOARD_HEIGHT):
-		var line: String = ""
-		for col in range(BOARD_WIDTH):
-			var b = board[row][col]
-			line += (Component.get_display_char(b.type) if b != null else ".") + " "
-		print(line)
-
-
 # ---- Hilfen ----
 
 func _is_in_bounds(col: int, row: int) -> bool:
@@ -54,8 +41,8 @@ func get_block(col: int, row: int):
 	return board[row][col]
 
 
-# Kompatibilität: gibt den Typ (Component.ComponentType) an (col,row) zurück
-# oder null. Wird von component.gd (Nachbar-Synergien, Hitze) genutzt.
+# Gibt den Typ (Component.ComponentType) an (col,row) zurück oder null.
+# Wird für Nachbar-Synergien (Hitze) genutzt.
 func get_component(col: int, row: int):
 	var b = get_block(col, row)
 	return b.type if b != null else null
@@ -63,7 +50,7 @@ func get_component(col: int, row: int):
 
 # ---- Platzierung / Entfernung ----
 
-# Platziert einen Block eines Typs. Standard-Ports: Eingang links, Ausgang rechts.
+# Platziert einen Block eines Typs (Eingang links, Ausgang rechts – fest).
 # Gibt true bei Erfolg zurück.
 func place_component(col: int, row: int, type: int) -> bool:
 	if not _is_in_bounds(col, row):
@@ -73,6 +60,15 @@ func place_component(col: int, row: int, type: int) -> bool:
 		return false
 	board[row][col] = Block.new(type)
 	return true
+
+
+# Tauscht die Blöcke zweier Felder (fürs Drag-Verschieben auf ein belegtes Feld).
+func swap_blocks(c1: int, r1: int, c2: int, r2: int) -> void:
+	if not _is_in_bounds(c1, r1) or not _is_in_bounds(c2, r2):
+		return
+	var tmp = board[r1][c1]
+	board[r1][c1] = board[r2][c2]
+	board[r2][c2] = tmp
 
 
 # Entfernt den Block an (col,row). Gibt den entfernten Typ zurück oder -1.
@@ -88,17 +84,17 @@ func clear_board() -> void:
 	_init_board()
 
 
-# ---- Watt / Hitze ----
-
-func get_used_watt() -> int:
-	var total = 0
+# Anzahl belegter Felder.
+func placed_count() -> int:
+	var n := 0
 	for row in range(BOARD_HEIGHT):
 		for col in range(BOARD_WIDTH):
-			var b = board[row][col]
-			if b != null:
-				total += Component.get_watt_cost(b.type)
-	return total
+			if board[row][col] != null:
+				n += 1
+	return n
 
+
+# ---- Hitze ----
 
 # Gesamte Hitze. Jeder benachbarte Kühler senkt die Hitze eines Blocks.
 func get_total_heat() -> int:
@@ -139,107 +135,60 @@ func get_board_multiplier() -> float:
 	return 1.0 + count * Component.MAINBOARD_BONUS
 
 
-# ---- Paket-Routing (links rein, rechts raus) ----
+# ---- Paket-Routing: Lanes (jede Zeile fließt links -> rechts) ----
 
-# Simuliert den Weg eines Pakets. Rückgabe:
+# Simuliert EINE Zeile als Lane. Ein Paket startet in Spalte 0 (falls dort ein
+# Block liegt) und läuft nach rechts durch die lückenlose Kette. Gibt {} zurück,
+# wenn die Zeile keinen Startblock in Spalte 0 hat (inaktive Lane).
 # {
-#   "value": int,           # aufgesammelter Wert
-#   "path": Array,          # [{col,row,before,after,type}]
-#   "reached_end": bool,    # true, wenn das Paket den rechten Rand verlässt
-#   "error": String         # leer, oder Grund für Abbruch
+#   "row": int,
+#   "value": int,           # aufgesammelter Endwert
+#   "path": Array,          # [{col,row,before,after,type}] für die Animation
+#   "reached_end": bool,    # Kette reicht bis zur letzten Spalte (Durchbruch)
+#   "stop_col": int,        # erste leere Spalte (oder BOARD_WIDTH)
 # }
-func simulate_path(start_value: int = 1) -> Dictionary:
-	var result := {"value": 0, "path": [], "reached_end": false, "error": ""}
-
-	# Startblock finden: Spalte 0, Eingang nach links, oberster.
-	var start_row := -1
-	for row in range(BOARD_HEIGHT):
-		var b = board[row][0]
-		if b != null and b.in_dir == Block.Dir.LEFT:
-			start_row = row
-			break
-	if start_row == -1:
-		result.error = "Kein Startblock: setze in Spalte 0 einen Block mit Eingang nach links."
-		return result
+func simulate_lane(row: int, start_value: int = 1) -> Dictionary:
+	if get_block(0, row) == null:
+		return {}
 
 	var value := start_value
 	var col := 0
-	var row := start_row
 	var prev_type := -1
-	var visited := {}
+	var path: Array = []
 
-	while true:
+	while col < BOARD_WIDTH and board[row][col] != null:
 		var b = board[row][col]
-		if b == null:
-			result.error = "Interner Fehler: leeres Feld im Pfad."
-			break
-
-		# Effekt anwenden (LOOP wiederholt den vorherigen Block-Effekt)
 		var before: int = value
-		var prior: int = result.path.size()  # Anzahl bereits durchlaufener Bausteine
+		var idx: int = path.size()  # Anzahl bereits durchlaufener Blöcke in DIESER Lane
 		match b.type:
 			Component.ComponentType.CACHE:
-				# Cache wiederholt den Effekt des vorherigen Bausteins
+				# Cache wiederholt den Effekt des vorherigen Blocks
 				if prev_type != -1:
 					value = Component.process_packet(prev_type, value)
 			Component.ComponentType.RAM:
-				# RAM: +2 je bereits durchlaufenem Baustein
-				value += 2 * prior
+				# RAM: +2 je bereits durchlaufenem Block
+				value += 2 * idx
 			_:
 				value = Component.process_packet(b.type, value)
 		prev_type = b.type
+		path.append({"col": col, "row": row, "before": before, "after": value, "type": b.type})
+		col += 1
 
-		result.path.append({
-			"col": col, "row": row, "before": before, "after": value, "type": b.type
-		})
-		visited[Vector2i(col, row)] = true
-
-		# Nächstes Feld anhand des Ausgangs
-		var d: Vector2i = Block.delta(b.out_dir)
-		var nc := col + d.x
-		var nr := row + d.y
-
-		# Rand verlassen?
-		if not _is_in_bounds(nc, nr):
-			result.reached_end = (b.out_dir == Block.Dir.RIGHT and col == BOARD_WIDTH - 1)
-			if not result.reached_end:
-				result.error = "Sackgasse: der Ausgang zeigt aus dem Board (nicht am rechten Rand)."
-			break
-
-		var nb = board[nr][nc]
-		if nb == null:
-			result.error = "Sackgasse: das nächste Feld (%d,%d) ist leer." % [nc, nr]
-			break
-		if nb.in_dir != Block.opposite(b.out_dir):
-			result.error = "Ports passen nicht: (%d,%d) nimmt das Paket nicht an." % [nc, nr]
-			break
-		if visited.has(Vector2i(nc, nr)):
-			result.error = "Schleife erkannt – der Pfad läuft im Kreis."
-			break
-
-		col = nc
-		row = nr
-
-	result.value = value
-	return result
+	return {
+		"row": row,
+		"value": value,
+		"path": path,
+		"reached_end": col == BOARD_WIDTH,  # bis über die letzte Spalte gelaufen -> Durchbruch
+		"stop_col": col,
+	}
 
 
-# ---- Listen ----
-
-func get_all_components() -> Array:
-	var items = []
+# Simuliert alle aktiven Lanes (Zeilen mit Startblock in Spalte 0).
+# Gibt ein Array von Lane-Dictionaries zurück (siehe simulate_lane).
+func simulate_all_lanes(start_value: int = 1) -> Array:
+	var lanes: Array = []
 	for row in range(BOARD_HEIGHT):
-		for col in range(BOARD_WIDTH):
-			var b = board[row][col]
-			if b != null:
-				items.append({"type": b.type, "col": col, "row": row})
-	return items
-
-
-func get_available_positions() -> Array:
-	var positions = []
-	for row in range(BOARD_HEIGHT):
-		for col in range(BOARD_WIDTH):
-			if board[row][col] == null:
-				positions.append({"col": col, "row": row})
-	return positions
+		var lane := simulate_lane(row, start_value)
+		if not lane.is_empty():
+			lanes.append(lane)
+	return lanes

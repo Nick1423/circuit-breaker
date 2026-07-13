@@ -1,104 +1,128 @@
-# Circuit Breaker - Firewall-System
-# Verwaltet die Firewall einer Runde: HP, Schaden, Belohnungen, Hitze-Limit
-# und ab Level 3 zufällige Modifikatoren (Sonderregeln, die deine Engine brechen).
+# Core Cocker - Firewall-System
+# Verwaltet die Firewall eines Levels: HP, Schaden, Belohnung, Hitze-Limit und
+# ab Level 3 zufällige Modifikatoren (Sonderregeln), deren Anzahl und Stärke mit
+# dem Level wachsen – für unendlich steigende, aber faire Schwierigkeit.
 
 class_name Firewall
 
-enum Modifier {
-	NONE,      # keine Sonderregel
-	ARMORED,   # Gepanzert: +50% HP
-	UNSTABLE,  # Instabil: Hitze-Limit -4
-	SHIELD,    # Schild: Schaden pro Paket gedeckelt
-	JAMMER,    # Störsender: Zeile 0 zählt nicht
-	MELTDOWN   # Brandmelder: Überhitzungs-Malus doppelt
+enum Modifier { ARMORED, UNSTABLE, SHIELD, JAMMER, MELTDOWN }
+
+const MOD_NAMES := {
+	Modifier.ARMORED:  "Gepanzert",
+	Modifier.UNSTABLE: "Instabil",
+	Modifier.SHIELD:   "Schild",
+	Modifier.JAMMER:   "Störsender",
+	Modifier.MELTDOWN: "Brandmelder",
 }
 
 var level: int
 var health: int
 var max_health: int
-var reward_watt: int          # Belohnung (Geld) bei Zerstörung
-var packets_per_round: int
+var reward_watt: int            # Belohnung (Geld) bei Zerstörung
 var heat_limit: int
 
 # Modifikator-Zustand (von game_manager ausgewertet)
-var modifier: Modifier = Modifier.NONE
-var modifier_name: String = ""
-var modifier_desc: String = ""
-var packet_damage_cap: int = 0     # 0 = kein Deckel
-var overheat_factor: float = 1.0   # >1 verstärkt Überhitzungs-Malus
+var modifiers: Array = []          # Liste aktiver Modifier (int)
+var modifier_label: String = ""    # kombinierte Anzeige für die UI
+var packet_damage_cap: int = 0     # SHIELD: max. Schaden pro Lane (0 = kein Deckel)
+var overheat_factor: float = 1.0   # MELTDOWN: verstärkt den Überhitzungs-Malus
 
 
-func _init(p_level: int):
+# Unendliche HP-Kurve: früh sanft (+25%/Level), ab Level 10 zusätzlich versteilt.
+static func firewall_hp(l: int) -> int:
+	var base := 32.0 * pow(1.25, l - 1)
+	var accel := pow(1.06, max(0, l - 10))
+	return int(round(base * accel))
+
+
+func _init(p_level: int) -> void:
 	level = p_level
-	# HP fürs Level-Modell: in bis zu 3 Runden (kumulativ) zu knacken.
-	max_health = int(round(35.0 * pow(1.8, p_level - 1)))
-	reward_watt = 5 + p_level * 2
-	packets_per_round = 3 + int(floor(p_level / 2.0))
-	heat_limit = 6 + p_level
-
-	# Ab Level 3: Chance auf einen Modifikator
-	if p_level >= 3 and randf() < 0.6:
-		_apply_random_modifier()
-
+	max_health = firewall_hp(level)
+	reward_watt = 6 + level * 3
+	heat_limit = 6 + level
+	_roll_modifiers()
 	health = max_health
 
 
-func _apply_random_modifier() -> void:
-	var options = [
-		Modifier.ARMORED, Modifier.UNSTABLE, Modifier.SHIELD,
-		Modifier.JAMMER, Modifier.MELTDOWN
-	]
-	modifier = options[randi() % options.size()]
+# Anzahl unterschiedlicher Modifikatoren je Level (0..3).
+func _modifier_count() -> int:
+	if level < 3:
+		return 0
+	var guaranteed := 1
+	if level >= 8:
+		guaranteed = 2
+	if level >= 14:
+		guaranteed = 3
+	var extra := clampf(0.12 * (level - 3), 0.0, 0.5)
+	var n := guaranteed
+	if guaranteed < 3 and randf() < extra:
+		n += 1
+	return n
 
-	match modifier:
+
+func _roll_modifiers() -> void:
+	var n := _modifier_count()
+	if n <= 0:
+		return
+	var options := [Modifier.ARMORED, Modifier.UNSTABLE, Modifier.SHIELD, Modifier.JAMMER, Modifier.MELTDOWN]
+	options.shuffle()
+	modifiers = options.slice(0, min(n, options.size()))
+	# In fester Reihenfolge anwenden: ARMORED zuerst, damit SHIELD die erhöhte HP nutzt.
+	for m in [Modifier.ARMORED, Modifier.UNSTABLE, Modifier.SHIELD, Modifier.MELTDOWN, Modifier.JAMMER]:
+		if m in modifiers:
+			_apply_modifier(m)
+	var names := []
+	for m in modifiers:
+		names.append(MOD_NAMES[m])
+	modifier_label = ", ".join(names)
+
+
+func _apply_modifier(m: int) -> void:
+	match m:
 		Modifier.ARMORED:
-			modifier_name = "Gepanzert"
-			modifier_desc = "+50% HP"
-			max_health = int(round(max_health * 1.5))
+			var hp_mult := minf(2.0, 1.5 + 0.03 * (level - 3))
+			max_health = int(round(max_health * hp_mult))
 		Modifier.UNSTABLE:
-			modifier_name = "Instabil"
-			modifier_desc = "Hitze-Limit -4"
-			heat_limit = max(1, heat_limit - 4)
+			@warning_ignore("integer_division")
+			heat_limit = max(1, heat_limit - (4 + int((level - 3) / 4.0)))
 		Modifier.SHIELD:
-			modifier_name = "Schild"
-			packet_damage_cap = max(5, int(max_health / 2.0))
-			modifier_desc = "max. %d Schaden pro Paket" % packet_damage_cap
-		Modifier.JAMMER:
-			modifier_name = "Drossel"
-			modifier_desc = "1 Paket weniger"
-			packets_per_round = max(1, packets_per_round - 1)
+			var frac := clampf(0.5 - 0.02 * (level - 3), 0.22, 0.5)
+			packet_damage_cap = int(round(max_health * frac))
 		Modifier.MELTDOWN:
-			modifier_name = "Brandmelder"
-			modifier_desc = "Überhitzungs-Malus doppelt"
-			overheat_factor = 2.0
+			overheat_factor = minf(3.5, 2.0 + 0.1 * (level - 3))
+		Modifier.JAMMER:
+			pass  # Wirkung erst in jammer_rows()
+
+
+func has_modifier() -> bool:
+	return not modifiers.is_empty()
+
+
+# Welche Zeilen deaktiviert der Störsender? level<12: Zeile 0; level>=12: beste Lane.
+# Nie mehr als eine Zeile. board_ref = das Board (für simulate_lane).
+func jammer_rows(board_ref) -> Array:
+	if not (Modifier.JAMMER in modifiers):
+		return []
+	if level < 12:
+		return [0]
+	var best_row := -1
+	var best_val := -1
+	for row in range(board_ref.BOARD_HEIGHT):
+		var lane: Dictionary = board_ref.simulate_lane(row, 1)
+		if lane.is_empty():
+			continue
+		if int(lane.value) > best_val:
+			best_val = int(lane.value)
+			best_row = row
+	return [best_row] if best_row >= 0 else []
 
 
 # Fügt Schaden zu. Gibt true zurück, wenn die Firewall zerstört wurde.
 func take_damage(amount: int) -> bool:
-	health -= amount
-	if health < 0:
-		health = 0
-	print("  Firewall nimmt ", amount, " Schaden! (", health, "/", max_health, " HP)")
+	health = max(0, health - amount)
 	return health <= 0
 
 
 # Prüft, ob die Firewall noch steht.
 func is_alive() -> bool:
 	return health > 0
-
-
-func has_modifier() -> bool:
-	return modifier != Modifier.NONE
-
-
-# Gibt den aktuellen Status als String zurück.
-func get_status() -> String:
-	var s = "Firewall Level %d: %d/%d HP  (Hitze-Limit %d)" % [level, health, max_health, heat_limit]
-	if has_modifier():
-		s += "\n  >> MODIFIKATOR: %s (%s)" % [modifier_name, modifier_desc]
-	return s
-
-
-# Setzt die Firewall für einen neuen Versuch zurück (ohne Level-Änderung).
-func reset() -> void:
-	health = max_health

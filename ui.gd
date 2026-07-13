@@ -1,15 +1,16 @@
-# Circuit Breaker - Komplette Spiel-UI (klickbar, mit Ports & Animation)
+# Core Cocker - Komplette Spiel-UI (Drag & Drop, Lanes, Animation)
 #
-# Ablauf: Menü -> Shop (Bausteine kaufen) -> Bau-Phase (aus Inventar platzieren,
-# Ein-/Ausgänge per Popup drehen) -> Pakete senden (animiert) -> Shop -> ...
+# Ablauf: Menü -> Shop (kaufen) -> Bau-Phase (Bauteile aus dem Fach unten aufs
+# Feld ziehen) -> Pakete senden (animiert) -> Belohnung -> Shop -> ...
 #
-# Pakete laufen links rein, folgen den Ausgängen von Block zu Block und müssen
-# den rechten Rand erreichen (Durchbruch-Bonus). Alles wird über refresh()
-# aus dem GameManager-Zustand aktualisiert.
+# Jede Zeile ist eine "Lane": liegt in Spalte 0 ein Block, startet dort ein Paket
+# und fließt nach rechts durch die lückenlose Kette. Erreicht es den rechten Rand,
+# gibt es einen Durchbruch-Bonus. Mehr/längere Lanes = mehr Schaden, aber mehr
+# Hitze. Alles wird über refresh() aus dem GameManager-Zustand aktualisiert.
 
 extends Control
 
-# Component und Block sind über class_name global verfügbar – kein preload nötig.
+# Component, Block, BoardCell, InventoryItem, TrayDropZone sind über class_name global.
 
 # ---- Stil (Palette & Bau-Helfer stehen in ui_style.gd) ----
 const Style = preload("res://ui_style.gd")
@@ -26,6 +27,8 @@ const C_CELL    = Style.CELL
 const COMP_COLORS = Style.COMP_COLORS
 
 const CELL_SIZE := 90
+const STEP_TIME := 0.30   # Zeit pro Feld beim Paket-Lauf (langsam & lesbar)
+const HOLD_TIME := 0.20   # kurze Pause, wenn der Wert steigt
 
 var gm = null
 
@@ -34,7 +37,7 @@ var menu_root: Control
 var game_root: Control
 var shop_root: Control
 var over_root: Control
-var dialog_root: Control
+var reward_root: Control
 
 # HUD
 var lbl_round: Label
@@ -49,47 +52,46 @@ var heat_bar: ProgressBar
 var heat_lbl: Label
 var msg_lbl: Label
 var send_btn: Button
-var inv_grid: GridContainer
-var menu_high: Label
 
-# Board-Zellen (jeweils [row][col])
-var cell_root := []
-var cell_char := []
-var cell_in := []
-var cell_out := []
-var cell_info := []
+# Board
+var board_area: Control
+var rail_overlay: Control     # zeichnet Schienen/Sockel HINTER den Zellen
+var wire_overlay: Control     # zeichnet Kabel/Nubs VOR den Zellen
+var cell_root := []           # [row][col] -> BoardCell
+var cell_char := []           # [row][col] -> Label
+var lane_chip := []           # [row] -> Label (Schadenszahl am rechten Rand)
+
+# Inventar-Fach (unten)
+var tray_box: HBoxContainer
+var inv_sell_btn: Button
 
 # Shop
 var shop_money: Label
 var shop_offers: VBoxContainer
+var shop_reroll_btn: Button
+var shop_next_btn: Button
+var shop_relics_lbl: Label
+
+# Belohnung
+var reward_cards: HBoxContainer
 
 # Game Over
 var over_round: Label
 var over_score: Label
 var over_high: Label
 
-# Belohnung / Sieg / Vorschau
-var reward_root: Control
-var reward_cards: HBoxContainer
-var victory_root: Control
-var victory_score: Label
+# Menü
+var menu_high: Label
 var preview_lbl: Label
-var shop_reroll_btn: Button
-var shop_relics_lbl: Label
-var inv_sell_btn: Button
-
-# Dialog
-var dlg_title: Label
-var dlg_desc: Label
-var dlg_ports: Label
-var dialog_cell := Vector2i(-1, -1)
 
 # Zustand
 var selected_inv_index := -1
 var _animating := false
-# Pfad-Vorschau (beim Bauen): Zellen auf dem Pfad + Abbruch-Zelle
-var _preview_cells := {}
-var _preview_break := Vector2i(-1, -1)
+# Vorschau beim Bauen
+var _powered := {}            # Vector2i -> true (Zelle ist Teil einer aktiven Lane)
+var _lane_by_row := {}        # row -> Lane-Dictionary (aus compute_send)
+var _orphan_cells := {}       # Vector2i -> true (belegt, aber ohne Strom)
+var _hint_start := false      # noch keine aktive Lane -> Spalte 0 einladen
 
 
 func _ready() -> void:
@@ -100,17 +102,25 @@ func _ready() -> void:
 	_build_game()
 	_build_shop()
 	_build_reward()
-	_build_victory()
 	_build_over()
-	_build_dialog()
 	refresh()
+
+
+# Tastatur: Leertaste/Enter = Pakete senden.
+func _unhandled_input(event: InputEvent) -> void:
+	if gm == null or not (event is InputEventKey) or not event.pressed or event.echo:
+		return
+	match event.keycode:
+		KEY_SPACE, KEY_ENTER, KEY_KP_ENTER:
+			if gm.phase == gm.GamePhase.BUILD and not _animating:
+				_on_send()
+				get_viewport().set_input_as_handled()
 
 
 # =============================================================
 #  STYLE-HELFER
 # =============================================================
 
-# Dünne Weiterleitungen an Style – die eigentliche Definition liegt in ui_style.gd.
 func _sb(bg: Color, border_col := Color(0,0,0,0), border_w := 0, radius := 8, pad := 8) -> StyleBoxFlat:
 	return Style.sb(bg, border_col, border_w, radius, pad)
 
@@ -155,11 +165,11 @@ func _build_menu() -> void:
 	box.alignment = BoxContainer.ALIGNMENT_CENTER
 	center.add_child(box)
 
-	var title := _label(">> CIRCUIT BREAKER <<", 46, C_ACCENT)
+	var title := _label(">> CORE COCKER <<", 46, C_ACCENT)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(title)
 
-	var sub := _label("Baue die Schaltung, leite das Paket, knacke die Firewall.", 17, C_MUTED)
+	var sub := _label("Baue Schaltungs-Lanes, leite die Pakete, knacke endlose Firewalls.", 17, C_MUTED)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(sub)
 
@@ -200,11 +210,11 @@ func _build_game() -> void:
 	var margin := MarginContainer.new()
 	_full(margin)
 	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
-		margin.add_theme_constant_override(m, 20)
+		margin.add_theme_constant_override(m, 18)
 	game_root.add_child(margin)
 
 	var root_v := VBoxContainer.new()
-	root_v.add_theme_constant_override("separation", 14)
+	root_v.add_theme_constant_override("separation", 12)
 	margin.add_child(root_v)
 
 	# Top-Bar
@@ -213,11 +223,11 @@ func _build_game() -> void:
 	var top_h := HBoxContainer.new()
 	top_h.add_theme_constant_override("separation", 20)
 	topbar.add_child(top_h)
-	top_h.add_child(_label("CIRCUIT BREAKER", 20, C_ACCENT))
+	top_h.add_child(_label("CORE COCKER", 20, C_ACCENT))
 	var tsp := Control.new()
 	tsp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top_h.add_child(tsp)
-	lbl_round = _label("Runde 1", 18, C_TEXT)
+	lbl_round = _label("Vorbereitung", 18, C_TEXT)
 	lbl_money = _label("Geld: 0", 18, C_WARN)
 	lbl_score = _label("Score: 0", 18, C_ACCENT2)
 	top_h.add_child(lbl_round)
@@ -232,18 +242,18 @@ func _build_game() -> void:
 	menu_btn.pressed.connect(func(): gm.show_homescreen())
 	top_h.add_child(menu_btn)
 
-	# Mitte
+	# Mitte: LINKS Board-Bereich, RECHTS Vorschau/Senden/Meldung
 	var mid := HBoxContainer.new()
 	mid.add_theme_constant_override("separation", 16)
 	mid.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	root_v.add_child(mid)
 
-	# LINKS: Firewall + Board + Hitze
 	var left := VBoxContainer.new()
 	left.add_theme_constant_override("separation", 12)
 	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	mid.add_child(left)
 
+	# Firewall
 	fw_panel = _panel(C_PANEL, C_DANGER.darkened(0.3), 1, 10)
 	left.add_child(fw_panel)
 	var fw_v := VBoxContainer.new()
@@ -259,26 +269,49 @@ func _build_game() -> void:
 	fw_top.add_child(fw_mod)
 	fw_v.add_child(fw_top)
 	fw_bar = _make_bar(C_DANGER)
-	fw_bar.custom_minimum_size = Vector2(0, 22)
+	fw_bar.custom_minimum_size = Vector2(0, 24)
 	fw_v.add_child(fw_bar)
 	fw_hp = _label("", 13, C_MUTED)
 	fw_v.add_child(fw_hp)
 
+	# Board-Bereich (Rail-Overlay | Grid | Wire-Overlay | Lane-Chips)
+	board_area = Control.new()
+	board_area.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	board_area.custom_minimum_size = Vector2(640, 400)
+	left.add_child(board_area)
+
+	rail_overlay = Control.new()
+	rail_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_full(rail_overlay)
+	rail_overlay.draw.connect(_draw_rails)
+	board_area.add_child(rail_overlay)
+
 	var board_center := CenterContainer.new()
-	board_center.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	left.add_child(board_center)
-	var board_h := HBoxContainer.new()
-	board_h.add_theme_constant_override("separation", 6)
-	board_center.add_child(board_h)
-	board_h.add_child(_marker("START", C_ACCENT2))
+	_full(board_center)
+	board_center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	board_area.add_child(board_center)
 	var grid := GridContainer.new()
 	grid.columns = 6
-	grid.add_theme_constant_override("h_separation", 6)
-	grid.add_theme_constant_override("v_separation", 6)
-	board_h.add_child(grid)
+	grid.add_theme_constant_override("h_separation", 8)
+	grid.add_theme_constant_override("v_separation", 8)
+	board_center.add_child(grid)
 	_build_cells(grid)
-	board_h.add_child(_marker("ZIEL", C_DANGER))
 
+	wire_overlay = Control.new()
+	wire_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_full(wire_overlay)
+	wire_overlay.draw.connect(_draw_wires)
+	board_area.add_child(wire_overlay)
+
+	lane_chip.clear()
+	for r in range(4):
+		var chip := _label("", 15, C_ACCENT2)
+		chip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		chip.z_index = 5
+		board_area.add_child(chip)
+		lane_chip.append(chip)
+
+	# Hitze
 	var heat_panel := _panel(C_PANEL, C_PANEL2, 1, 10)
 	left.add_child(heat_panel)
 	var heat_v := VBoxContainer.new()
@@ -288,61 +321,83 @@ func _build_game() -> void:
 	heat_bar = _make_bar(C_WARN)
 	heat_v.add_child(heat_bar)
 
-	# RECHTS: Inventar + Senden + Meldung
+	# RECHTS: Vorschau + Senden + Meldung
 	var right := VBoxContainer.new()
 	right.add_theme_constant_override("separation", 12)
-	right.custom_minimum_size = Vector2(340, 0)
+	right.custom_minimum_size = Vector2(300, 0)
 	mid.add_child(right)
 
-	var inv_panel := _panel(C_PANEL, C_ACCENT.darkened(0.4), 1, 10)
-	inv_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	right.add_child(inv_panel)
-	var inv_v := VBoxContainer.new()
-	inv_v.add_theme_constant_override("separation", 8)
-	inv_panel.add_child(inv_v)
-	inv_v.add_child(_label("INVENTAR", 16, C_ACCENT))
-	inv_v.add_child(_label("auswählen, dann leeres Feld klicken", 12, C_MUTED))
-	inv_grid = GridContainer.new()
-	inv_grid.columns = 4
-	inv_grid.add_theme_constant_override("h_separation", 6)
-	inv_grid.add_theme_constant_override("v_separation", 6)
-	inv_v.add_child(inv_grid)
-	inv_sell_btn = Button.new()
-	inv_sell_btn.text = "Ausgewähltes verkaufen"
-	inv_sell_btn.add_theme_font_size_override("font_size", 13)
-	_style_button(inv_sell_btn, C_PANEL2)
-	inv_sell_btn.pressed.connect(_on_sell)
-	inv_v.add_child(inv_sell_btn)
-
-	preview_lbl = _label("", 14, C_ACCENT2)
-	preview_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	right.add_child(preview_lbl)
+	var prev_panel := _panel(C_PANEL, C_ACCENT2.darkened(0.4), 1, 10)
+	right.add_child(prev_panel)
+	var prev_v := VBoxContainer.new()
+	prev_v.add_theme_constant_override("separation", 4)
+	prev_panel.add_child(prev_v)
+	prev_v.add_child(_label("VORSCHAU", 14, C_ACCENT2))
+	preview_lbl = _label("", 14, C_TEXT)
+	preview_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	preview_lbl.custom_minimum_size = Vector2(0, 66)
+	prev_v.add_child(preview_lbl)
 
 	send_btn = Button.new()
-	send_btn.text = ">  PAKETE SENDEN"
-	send_btn.custom_minimum_size = Vector2(0, 56)
+	send_btn.text = ">  PAKETE SENDEN  (Leertaste)"
+	send_btn.custom_minimum_size = Vector2(0, 60)
 	send_btn.add_theme_font_size_override("font_size", 20)
 	_style_button(send_btn, C_ACCENT2.darkened(0.35))
 	send_btn.pressed.connect(_on_send)
 	right.add_child(send_btn)
 
 	var msg_panel := _panel(Color(0.08,0.09,0.12), C_PANEL2, 1, 10)
-	msg_panel.custom_minimum_size = Vector2(0, 90)
+	msg_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	right.add_child(msg_panel)
-	msg_lbl = _label("Kaufe Bausteine, platziere sie, verbinde Ein-/Ausgänge zum rechten Rand.", 14, C_MUTED)
+	msg_lbl = _label("Zieh Bauteile aus dem Fach unten in die Zeilen. Fülle eine Zeile bis zum rechten Rand für den Durchbruch-Bonus.", 14, C_MUTED)
 	msg_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	msg_lbl.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	msg_panel.add_child(msg_lbl)
 
+	# UNTEN: Inventar-Fach (Drag-Quelle + Ablage zum Zurücklegen)
+	var tray_panel := TrayDropZone.new()
+	tray_panel.add_theme_stylebox_override("panel", _sb(C_PANEL, C_ACCENT.darkened(0.4), 1, 10, 10))
+	tray_panel.custom_minimum_size = Vector2(0, 104)
+	tray_panel.block_returned.connect(_on_tray_drop)
+	root_v.add_child(tray_panel)
+	var tray_v := VBoxContainer.new()
+	tray_v.add_theme_constant_override("separation", 6)
+	tray_panel.add_child(tray_v)
+	var tray_head := HBoxContainer.new()
+	tray_head.add_theme_constant_override("separation", 12)
+	tray_v.add_child(tray_head)
+	tray_head.add_child(_label("INVENTAR", 15, C_ACCENT))
+	tray_head.add_child(_label("Chip aufs Feld ziehen · Rechtsklick auf Block = zurück · Block auf einen anderen ziehen = tauschen", 12, C_MUTED))
+	var thsp := Control.new()
+	thsp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tray_head.add_child(thsp)
+	inv_sell_btn = Button.new()
+	inv_sell_btn.text = "Auswahl verkaufen"
+	inv_sell_btn.add_theme_font_size_override("font_size", 12)
+	_style_button(inv_sell_btn, C_PANEL2)
+	inv_sell_btn.pressed.connect(_on_sell)
+	tray_head.add_child(inv_sell_btn)
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(0, 62)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	tray_v.add_child(scroll)
+	tray_box = HBoxContainer.new()
+	tray_box.add_theme_constant_override("separation", 8)
+	scroll.add_child(tray_box)
+
 
 func _build_cells(grid: GridContainer) -> void:
-	cell_root.clear(); cell_char.clear(); cell_in.clear(); cell_out.clear(); cell_info.clear()
+	cell_root.clear(); cell_char.clear()
 	for r in range(4):
-		var rr := []; var rc := []; var ri := []; var ro := []; var rinfo := []
+		var rr := []; var rc := []
 		for c in range(6):
-			var panel := Panel.new()
-			panel.custom_minimum_size = Vector2(CELL_SIZE, CELL_SIZE)
-			panel.gui_input.connect(_on_cell_input.bind(c, r))
+			var cell := BoardCell.new()
+			cell.c = c
+			cell.r = r
+			cell.custom_minimum_size = Vector2(CELL_SIZE, CELL_SIZE)
+			cell.item_dropped.connect(_on_cell_drop)
+			cell.gui_input.connect(_on_cell_input.bind(c, r))
 
 			var char_lbl := Label.new()
 			_full(char_lbl)
@@ -351,54 +406,11 @@ func _build_cells(grid: GridContainer) -> void:
 			char_lbl.add_theme_font_size_override("font_size", 15)
 			char_lbl.add_theme_color_override("font_color", Color.WHITE)
 			char_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
-			panel.add_child(char_lbl)
+			cell.add_child(char_lbl)
 
-			var in_lbl := Label.new()
-			in_lbl.add_theme_font_size_override("font_size", 15)
-			in_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
-			panel.add_child(in_lbl)
-
-			var out_lbl := Label.new()
-			out_lbl.add_theme_font_size_override("font_size", 17)
-			out_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
-			panel.add_child(out_lbl)
-
-			var info_btn := Button.new()
-			info_btn.text = "i"
-			info_btn.custom_minimum_size = Vector2(20, 20)
-			info_btn.position = Vector2(CELL_SIZE - 24, 4)
-			info_btn.add_theme_font_size_override("font_size", 12)
-			_style_button(info_btn, C_PANEL2)
-			info_btn.pressed.connect(_on_cell_info.bind(c, r))
-			panel.add_child(info_btn)
-
-			grid.add_child(panel)
-			rr.append(panel); rc.append(char_lbl); ri.append(in_lbl); ro.append(out_lbl); rinfo.append(info_btn)
-		cell_root.append(rr); cell_char.append(rc); cell_in.append(ri); cell_out.append(ro); cell_info.append(rinfo)
-
-
-func _vtext(s: String) -> String:
-	var out := ""
-	for i in range(s.length()):
-		out += s[i]
-		if i < s.length() - 1:
-			out += "\n"
-	return out
-
-func _marker(text: String, col: Color) -> Label:
-	var l := _label(_vtext(text), 13, col)
-	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	l.custom_minimum_size = Vector2(26, 0)
-	return l
-
-func _edge_pos(dir: int) -> Vector2:
-	match dir:
-		Block.Dir.RIGHT: return Vector2(CELL_SIZE - 18, CELL_SIZE / 2.0 - 10)
-		Block.Dir.DOWN:  return Vector2(CELL_SIZE / 2.0 - 8, CELL_SIZE - 22)
-		Block.Dir.LEFT:  return Vector2(2, CELL_SIZE / 2.0 - 10)
-		Block.Dir.UP:    return Vector2(CELL_SIZE / 2.0 - 8, 2)
-	return Vector2(CELL_SIZE / 2.0, CELL_SIZE / 2.0)
+			grid.add_child(cell)
+			rr.append(cell); rc.append(char_lbl)
+		cell_root.append(rr); cell_char.append(rc)
 
 
 # =============================================================
@@ -417,7 +429,7 @@ func _build_shop() -> void:
 	_full(center)
 	shop_root.add_child(center)
 	var panel := _panel(C_PANEL, C_ACCENT.darkened(0.2), 2, 14)
-	panel.custom_minimum_size = Vector2(560, 480)
+	panel.custom_minimum_size = Vector2(560, 500)
 	center.add_child(panel)
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 12)
@@ -430,7 +442,7 @@ func _build_shop() -> void:
 	shop_money = _label("Geld: 0", 20, C_WARN)
 	head.add_child(shop_money)
 	v.add_child(head)
-	v.add_child(_label("Gekaufte Bausteine landen im Inventar.", 14, C_MUTED))
+	v.add_child(_label("Gekaufte Bausteine landen im Inventar-Fach.", 14, C_MUTED))
 	shop_offers = VBoxContainer.new()
 	shop_offers.add_theme_constant_override("separation", 8)
 	shop_offers.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -450,18 +462,18 @@ func _build_shop() -> void:
 	_style_button(shop_reroll_btn, C_PANEL2)
 	shop_reroll_btn.pressed.connect(_on_reroll)
 	btn_row.add_child(shop_reroll_btn)
-	var next_btn := Button.new()
-	next_btn.text = "Weiter  >"
-	next_btn.custom_minimum_size = Vector2(0, 50)
-	next_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	next_btn.add_theme_font_size_override("font_size", 18)
-	_style_button(next_btn, C_ACCENT2.darkened(0.35))
-	next_btn.pressed.connect(_on_next)
-	btn_row.add_child(next_btn)
+	shop_next_btn = Button.new()
+	shop_next_btn.text = "Weiter  >"
+	shop_next_btn.custom_minimum_size = Vector2(0, 50)
+	shop_next_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	shop_next_btn.add_theme_font_size_override("font_size", 18)
+	_style_button(shop_next_btn, C_ACCENT2.darkened(0.35))
+	shop_next_btn.pressed.connect(_on_next)
+	btn_row.add_child(shop_next_btn)
 
 
 # =============================================================
-#  BELOHNUNGS-OVERLAY (Relikt-Wahl)
+#  BELOHNUNGS-OVERLAY
 # =============================================================
 
 func _build_reward() -> void:
@@ -489,6 +501,7 @@ func _build_reward() -> void:
 
 func _refresh_reward() -> void:
 	for c in reward_cards.get_children():
+		reward_cards.remove_child(c)
 		c.queue_free()
 	for i in range(gm.reward_choices.size()):
 		var r = gm.reward_choices[i]
@@ -497,8 +510,8 @@ func _refresh_reward() -> void:
 		var cv := VBoxContainer.new()
 		cv.add_theme_constant_override("separation", 10)
 		card.add_child(cv)
-		cv.add_child(_label(gm.RELIC_NAMES[r], 18, C_ACCENT2))
-		var desc := _label(gm.RELIC_DESCS[r], 14, C_TEXT)
+		cv.add_child(_label(gm.reward_name(r), 18, C_ACCENT2))
+		var desc := _label(gm.reward_desc(r), 14, C_TEXT)
 		desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		desc.custom_minimum_size = Vector2(186, 60)
 		cv.add_child(desc)
@@ -510,53 +523,6 @@ func _refresh_reward() -> void:
 		pick.pressed.connect(_on_reward_pick.bind(i))
 		cv.add_child(pick)
 		reward_cards.add_child(card)
-
-
-# =============================================================
-#  SIEG-OVERLAY
-# =============================================================
-
-func _build_victory() -> void:
-	victory_root = Control.new()
-	_full(victory_root)
-	add_child(victory_root)
-	var dim := ColorRect.new()
-	dim.color = Color(0, 0.04, 0.03, 0.85)
-	_full(dim)
-	victory_root.add_child(dim)
-	var center := CenterContainer.new()
-	_full(center)
-	victory_root.add_child(center)
-	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 14)
-	box.alignment = BoxContainer.ALIGNMENT_CENTER
-	center.add_child(box)
-	var t := _label("SIEG!", 52, C_ACCENT2)
-	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	box.add_child(t)
-	var s := _label("Alle Firewalls geknackt.", 18, C_TEXT)
-	s.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	box.add_child(s)
-	victory_score = _label("", 22, C_WARN)
-	victory_score.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	box.add_child(victory_score)
-	var sp := Control.new()
-	sp.custom_minimum_size = Vector2(0, 14)
-	box.add_child(sp)
-	var again := Button.new()
-	again.text = "Nochmal"
-	again.custom_minimum_size = Vector2(260, 50)
-	again.add_theme_font_size_override("font_size", 20)
-	_style_button(again, C_ACCENT2.darkened(0.35))
-	again.pressed.connect(_on_play)
-	box.add_child(again)
-	var menu := Button.new()
-	menu.text = "Hauptmenü"
-	menu.custom_minimum_size = Vector2(260, 42)
-	menu.add_theme_font_size_override("font_size", 17)
-	_style_button(menu, C_PANEL2)
-	menu.pressed.connect(func(): gm.show_homescreen())
-	box.add_child(menu)
 
 
 # =============================================================
@@ -581,7 +547,7 @@ func _build_over() -> void:
 	var title := _label("GAME OVER", 44, C_DANGER)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(title)
-	over_round = _label("", 18, C_TEXT)
+	over_round = _label("", 20, C_TEXT)
 	over_round.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(over_round)
 	over_score = _label("", 22, C_ACCENT2)
@@ -607,109 +573,6 @@ func _build_over() -> void:
 	_style_button(menu, C_PANEL2)
 	menu.pressed.connect(func(): gm.show_homescreen())
 	box.add_child(menu)
-
-
-# =============================================================
-#  BLOCK-DIALOG (Info + Aktionen)
-# =============================================================
-
-func _dlg_button(text: String) -> Button:
-	var b := Button.new()
-	b.text = text
-	b.custom_minimum_size = Vector2(0, 42)
-	b.add_theme_font_size_override("font_size", 16)
-	_style_button(b, C_PANEL2)
-	return b
-
-func _build_dialog() -> void:
-	dialog_root = Control.new()
-	_full(dialog_root)
-	add_child(dialog_root)
-	var dim := ColorRect.new()
-	dim.color = Color(0, 0, 0, 0.6)
-	_full(dim)
-	dim.gui_input.connect(_on_dialog_dim_input)
-	dialog_root.add_child(dim)
-	var center := CenterContainer.new()
-	_full(center)
-	dialog_root.add_child(center)
-	var panel := _panel(C_PANEL, C_ACCENT.darkened(0.2), 2, 14)
-	panel.custom_minimum_size = Vector2(430, 0)
-	center.add_child(panel)
-	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 10)
-	panel.add_child(v)
-	dlg_title = _label("", 22, C_ACCENT)
-	v.add_child(dlg_title)
-	dlg_desc = _label("", 15, C_TEXT)
-	dlg_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	dlg_desc.custom_minimum_size = Vector2(390, 0)
-	v.add_child(dlg_desc)
-	dlg_ports = _label("", 15, C_MUTED)
-	v.add_child(dlg_ports)
-	var sep := Control.new()
-	sep.custom_minimum_size = Vector2(0, 6)
-	v.add_child(sep)
-	var b_in := _dlg_button("Eingang drehen")
-	b_in.pressed.connect(_on_rotate_in)
-	v.add_child(b_in)
-	var b_out := _dlg_button("Ausgang drehen")
-	b_out.pressed.connect(_on_rotate_out)
-	v.add_child(b_out)
-	var b_rm := _dlg_button("Entfernen (zurück ins Inventar)")
-	_style_button(b_rm, C_DANGER.darkened(0.4))
-	b_rm.pressed.connect(_on_remove_block)
-	v.add_child(b_rm)
-	var b_close := _dlg_button("Schließen")
-	b_close.pressed.connect(_close_dialog)
-	v.add_child(b_close)
-
-
-func _open_dialog(c: int, r: int) -> void:
-	if gm.board.get_block(c, r) == null:
-		return
-	dialog_cell = Vector2i(c, r)
-	_refresh_dialog()
-	dialog_root.visible = true
-
-func _refresh_dialog() -> void:
-	var b = gm.board.get_block(dialog_cell.x, dialog_cell.y)
-	if b == null:
-		_close_dialog()
-		return
-	dlg_title.text = "%s  [%s]" % [Component.get_type_name(b.type), Component.get_display_char(b.type)]
-	dlg_desc.text = Component.get_description(b.type)
-	dlg_ports.text = "Eingang: %s %s     Ausgang: %s %s" % [
-		Block.arrow(b.in_dir), Block.dir_name(b.in_dir),
-		Block.arrow(b.out_dir), Block.dir_name(b.out_dir)]
-
-func _on_dialog_dim_input(e: InputEvent) -> void:
-	if e is InputEventMouseButton and e.pressed:
-		_close_dialog()
-
-func _close_dialog() -> void:
-	dialog_root.visible = false
-	dialog_cell = Vector2i(-1, -1)
-
-func _on_rotate_in() -> void:
-	var b = gm.board.get_block(dialog_cell.x, dialog_cell.y)
-	if b: b.cycle_in()
-	_refresh_dialog()
-	refresh()
-
-func _on_rotate_out() -> void:
-	var b = gm.board.get_block(dialog_cell.x, dialog_cell.y)
-	if b: b.cycle_out()
-	_refresh_dialog()
-	refresh()
-
-func _on_remove_block() -> void:
-	var t = gm.board.remove_component(dialog_cell.x, dialog_cell.y)
-	if t >= 0 and gm.inventory:
-		gm.inventory.add_item(t)
-		_set_msg("Zurück ins Inventar: %s" % Component.get_type_name(t))
-	_close_dialog()
-	refresh()
 
 
 # =============================================================
@@ -740,36 +603,78 @@ func _on_sell() -> void:
 		gm.sell_item(selected_inv_index)
 		selected_inv_index = -1
 	else:
-		_set_msg("Wähle zuerst ein Inventar-Item zum Verkaufen.")
+		_set_msg("Wähle zuerst ein Inventar-Item (anklicken).")
 	refresh()
 
 func _on_reward_pick(index: int) -> void:
 	gm.choose_reward(index)
 	refresh()
 
-func _on_cell_info(c: int, r: int) -> void:
-	if _animating:
-		return
-	if gm.board.get_block(c, r) != null:
-		_open_dialog(c, r)
+func _on_inv_select(index: int) -> void:
+	selected_inv_index = index
+	refresh()
 
+# Klick-Fallback auf eine Zelle (Ziehen ist der Hauptweg).
 func _on_cell_input(event: InputEvent, c: int, r: int) -> void:
-	if _animating:
+	if _animating or gm.phase != gm.GamePhase.BUILD:
 		return
 	if not (event is InputEventMouseButton) or not event.pressed:
 		return
-	if event.button_index != MOUSE_BUTTON_LEFT:
-		return
+	var block = gm.board.get_block(c, r)
+	if event.button_index == MOUSE_BUTTON_LEFT:
+		if block == null:
+			_try_place(c, r)
+	elif event.button_index == MOUSE_BUTTON_RIGHT:
+		if block != null:
+			_return_block(c, r)
+
+# Drop auf eine Zelle: platzieren (Inventar), verschieben oder tauschen (Board).
+func _on_cell_drop(c: int, r: int, data: Dictionary) -> void:
 	if gm.phase != gm.GamePhase.BUILD:
 		return
-	if gm.board.get_block(c, r) == null:
-		_try_place(c, r)
-	else:
-		_open_dialog(c, r)
+	match data.get("kind", ""):
+		"inventory":
+			var idx: int = int(data.get("index", -1))
+			if idx < 0 or idx >= gm.inventory.get_item_count():
+				return
+			var t: int = gm.inventory.peek_item(idx)
+			if gm.board.place_component(c, r, t):
+				gm.inventory.take_item(idx)
+				gm.stats.components_placed += 1
+				selected_inv_index = -1
+			else:
+				_set_msg("Feld ist belegt.")
+		"board":
+			var fc: int = int(data.get("from_c", -1))
+			var fr: int = int(data.get("from_r", -1))
+			if fc == c and fr == r:
+				return
+			if gm.board.get_block(c, r) == null:
+				var b = gm.board.remove_component(fc, fr)
+				if b >= 0:
+					gm.board.place_component(c, r, b)
+			else:
+				gm.board.swap_blocks(fc, fr, c, r)
+	refresh()
+
+# Drop aufs Inventar-Fach: platzierten Block zurücklegen.
+func _on_tray_drop(data: Dictionary) -> void:
+	if gm.phase != gm.GamePhase.BUILD:
+		return
+	var fc: int = int(data.get("from_c", -1))
+	var fr: int = int(data.get("from_r", -1))
+	_return_block(fc, fr)
+
+func _return_block(c: int, r: int) -> void:
+	var t = gm.board.remove_component(c, r)
+	if t >= 0 and gm.inventory:
+		gm.inventory.add_item(t)
+		_set_msg("Zurück ins Inventar: %s" % Component.get_type_name(t))
+	refresh()
 
 func _try_place(c: int, r: int) -> void:
 	if gm.inventory == null or selected_inv_index < 0:
-		_set_msg("Wähle zuerst ein Bauteil im Inventar aus.")
+		_set_msg("Wähle ein Bauteil (anklicken) oder zieh es direkt aufs Feld.")
 		return
 	if selected_inv_index >= gm.inventory.get_item_count():
 		selected_inv_index = -1
@@ -780,13 +685,9 @@ func _try_place(c: int, r: int) -> void:
 		gm.inventory.take_item(selected_inv_index)
 		gm.stats.components_placed += 1
 		selected_inv_index = -1
-		_set_msg("Platziert: %s. Klicke den Block, um Ein-/Ausgang zu drehen." % Component.get_type_name(t))
+		_set_msg("Platziert: %s." % Component.get_type_name(t))
 	else:
 		_set_msg("Dieses Feld ist belegt.")
-	refresh()
-
-func _on_inv_select(index: int) -> void:
-	selected_inv_index = index
 	refresh()
 
 func _set_msg(t: String) -> void:
@@ -810,34 +711,114 @@ func _on_send() -> void:
 	refresh()
 
 
-# Spielt den kompletten Sende-Vorgang ab: pro Paket einmal den Pfad entlang und
-# einen Firewall-Treffer. Die Schadens-Anteile summieren sich exakt auf total_damage.
 func _play_send(res: Dictionary) -> void:
-	var path: Array = res.get("path", [])
-	if path.is_empty():
-		_set_msg("Kein gültiger Pfad. " + String(res.get("path_error", "")))
-		await get_tree().create_timer(0.5).timeout
+	var lanes := []
+	for lr in res.get("lanes", []):
+		if not lr.jammed and not lr.path.is_empty():
+			lanes.append(lr)
+	var total := int(res.get("total_damage", 0))
+	if lanes.is_empty():
+		_set_msg("Keine aktive Lane – zieh Bauteile in Spalte 1 einer Zeile.")
+		await get_tree().create_timer(0.4).timeout
 		return
-	var packets = max(1, int(res.get("packets", 1)))
-	var total = int(res.get("total_damage", 0))
-	var shares = _split_damage(total, packets)
-	var hp = fw_bar.value  # HP-Balkenwert vor dem Schaden
-	for i in range(packets):
-		_set_msg("Paket %d / %d unterwegs …" % [i + 1, packets])
-		var target_hp = max(0.0, hp - shares[i])
-		await _travel_and_hit(res, shares[i], target_hp, i == 0)
-		hp = target_hp
+	var shares := _proportional_shares(lanes, total)
+	_set_msg("%d Paket(e) unterwegs …" % lanes.size())
+
+	# Alle Lanes gleichzeitig loslaufen lassen (Koroutinen ohne await starten).
+	var done := [0]
+	for i in range(lanes.size()):
+		_animate_lane(lanes[i], shares[i], done)
+	while done[0] < lanes.size():
+		await get_tree().process_frame
+
+	# Gesamtschaden auf einmal abziehen + Firewall-Punch/Shake.
+	if fw_bar:
+		var target_hp = max(0.0, fw_bar.value - total)
+		_shake(clampf(3.0 + total * 0.02, 3.0, 16.0))
+		fw_bar.pivot_offset = fw_bar.size / 2.0
+		var punch := create_tween()
+		punch.tween_property(fw_bar, "scale", Vector2(1.05, 1.25), 0.06)
+		punch.tween_property(fw_bar, "scale", Vector2.ONE, 0.16)
+		if fw_panel:
+			var flash := create_tween()
+			flash.tween_property(fw_panel, "modulate", Color(1.6, 1.2, 1.2), 0.06)
+			flash.tween_property(fw_panel, "modulate", Color(1, 1, 1), 0.2)
+		var hpt := create_tween()
+		hpt.tween_property(fw_bar, "value", target_hp, 0.35).set_trans(Tween.TRANS_CUBIC)
+		await hpt.finished
 
 
-# Verteilt den Gesamtschaden gleichmäßig auf n Pakete (Summe bleibt = total).
-func _split_damage(total: int, n: int) -> Array:
-	var arr = []
-	@warning_ignore("integer_division")
-	var base = total / n
-	var rem = total - base * n
-	for i in range(n):
-		arr.append(base + (1 if i < rem else 0))
-	return arr
+# Eine Lane: Paket läuft langsam die Kette entlang (Wert rollt hoch), fliegt dann
+# in die Firewall. Läuft als Koroutine parallel zu den anderen Lanes.
+func _animate_lane(lr: Dictionary, share: int, done: Array) -> void:
+	var path: Array = lr.path
+	var token := _make_packet_token(int(path[0].before))
+	add_child(token)
+	var lbl: Label = token.get_child(0)
+	token.global_position = _cell_center(path[0].col, path[0].row) - token.size / 2.0
+
+	for step in path:
+		var target = _cell_center(step.col, step.row) - token.size / 2.0
+		var mt := create_tween()
+		mt.tween_property(token, "global_position", target, STEP_TIME).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+		await mt.finished
+		if int(step.after) > int(step.before):
+			var roll := create_tween()
+			roll.tween_method(func(v): lbl.text = str(int(v)), float(step.before), float(step.after), 0.25).set_ease(Tween.EASE_OUT)
+			var pop := create_tween()
+			pop.tween_property(lbl, "scale", Vector2(1.3, 1.3), 0.09)
+			pop.tween_property(lbl, "scale", Vector2.ONE, 0.09)
+			_spawn_float("+%d" % (int(step.after) - int(step.before)), _cell_center(step.col, step.row), C_ACCENT2)
+			await get_tree().create_timer(HOLD_TIME).timeout
+		else:
+			lbl.text = str(int(step.after))
+
+	if lr.reached_end:
+		var last = path[path.size() - 1]
+		_spawn_float("Durchbruch!", _cell_center(last.col, last.row) + Vector2(0, -24), C_ACCENT)
+
+	lbl.text = str(share)
+	var bt := create_tween()
+	bt.tween_property(token, "scale", Vector2(1.3, 1.3), 0.08)
+	bt.tween_property(token, "scale", Vector2.ONE, 0.08)
+	await bt.finished
+
+	if fw_bar:
+		var fw_target = fw_bar.global_position + fw_bar.size / 2.0 - token.size / 2.0
+		var ft := create_tween()
+		ft.tween_property(token, "global_position", fw_target, 0.22).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+		await ft.finished
+		_spawn_float("-%d" % share, fw_bar.global_position + Vector2(fw_bar.size.x * 0.5, -8), C_DANGER)
+	token.queue_free()
+	done[0] += 1
+
+
+# Verteilt total gewichtet nach Lane-Schaden auf die Lanes (Summe = total).
+func _proportional_shares(lanes: Array, total: int) -> Array:
+	var weights := []
+	var sumw := 0
+	for lr in lanes:
+		var w = max(0, int(lr.damage))
+		weights.append(w)
+		sumw += w
+	var shares := []
+	if sumw <= 0:
+		@warning_ignore("integer_division")
+		var base = total / lanes.size()
+		for i in range(lanes.size()):
+			shares.append(base)
+		for i in range(total - base * lanes.size()):
+			shares[i] += 1
+		return shares
+	var assigned := 0
+	for i in range(lanes.size()):
+		var s = int(round(float(weights[i]) / float(sumw) * total))
+		shares.append(s)
+		assigned += s
+	if not shares.is_empty():
+		shares[0] = max(0, shares[0] + (total - assigned))
+	return shares
+
 
 func _cell_center(c: int, r: int) -> Vector2:
 	var node: Control = cell_root[r][c]
@@ -845,10 +826,10 @@ func _cell_center(c: int, r: int) -> Vector2:
 
 func _make_packet_token(val: int) -> Panel:
 	var p := Panel.new()
-	p.custom_minimum_size = Vector2(46, 46)
-	p.size = Vector2(46, 46)
-	p.pivot_offset = Vector2(23, 23)
-	p.add_theme_stylebox_override("panel", _sb(C_ACCENT, Color.WHITE, 2, 23, 0))
+	p.custom_minimum_size = Vector2(48, 48)
+	p.size = Vector2(48, 48)
+	p.pivot_offset = Vector2(24, 24)
+	p.add_theme_stylebox_override("panel", _sb(C_ACCENT, Color.WHITE, 2, 24, 0))
 	p.z_index = 100
 	var l := Label.new()
 	_full(l)
@@ -856,6 +837,7 @@ func _make_packet_token(val: int) -> Panel:
 	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	l.add_theme_font_size_override("font_size", 18)
 	l.add_theme_color_override("font_color", Color.BLACK)
+	l.pivot_offset = Vector2(24, 24)
 	l.text = str(val)
 	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	p.add_child(l)
@@ -868,66 +850,17 @@ func _spawn_float(text: String, gpos: Vector2, col: Color) -> void:
 	add_child(l)
 	l.global_position = gpos
 	var t := create_tween()
-	t.tween_property(l, "global_position:y", gpos.y - 36, 0.6)
+	t.tween_property(l, "global_position:y", gpos.y - 38, 0.6)
 	t.parallel().tween_property(l, "modulate:a", 0.0, 0.6)
 	t.tween_callback(l.queue_free)
 
-# Ein einzelnes Paket: läuft den Pfad entlang, zeigt seinen Schaden und schlägt
-# in die Firewall ein (HP-Balken auf target_hp). detailed=true nur beim 1. Paket
-# (mit "+X"-Einblendungen), die weiteren laufen schneller und ruhiger.
-func _travel_and_hit(res: Dictionary, share: int, target_hp: float, detailed: bool) -> void:
-	var path: Array = res.get("path", [])
-	if path.is_empty():
+func _shake(amount: float) -> void:
+	if game_root == null:
 		return
-
-	var token := _make_packet_token(int(path[0].before))
-	add_child(token)
-	var lbl: Label = token.get_child(0)
-	token.global_position = _cell_center(path[0].col, path[0].row) - token.size / 2.0
-
-	var step_time = 0.10 if detailed else 0.06
-	for step in path:
-		var target = _cell_center(step.col, step.row) - token.size / 2.0
-		var mt := create_tween()
-		mt.tween_property(token, "global_position", target, step_time).set_trans(Tween.TRANS_SINE)
-		await mt.finished
-		lbl.text = str(int(step.after))
-		if detailed and int(step.after) > int(step.before):
-			_spawn_float("+%d" % (int(step.after) - int(step.before)), _cell_center(step.col, step.row), C_ACCENT2)
-
-	# Durchbruch sichtbar machen, dann auf den echten Paket-Schaden setzen
-	var last = path[path.size() - 1]
-	if res.get("reached_end", false) and detailed:
-		_spawn_float("Durchbruch!", _cell_center(last.col, last.row) + Vector2(0, -22), C_ACCENT)
-	lbl.text = str(share)
-	var bt := create_tween()
-	bt.tween_property(token, "scale", Vector2(1.35, 1.35), 0.08)
-	bt.tween_property(token, "scale", Vector2(1, 1), 0.08)
-	await bt.finished
-
-	# In die Firewall schießen
-	if fw_bar == null:
-		token.queue_free()
-		return
-	var fw_target = fw_bar.global_position + fw_bar.size / 2.0 - token.size / 2.0
-	var ft := create_tween()
-	ft.tween_property(token, "global_position", fw_target, 0.20).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
-	await ft.finished
-	token.queue_free()
-
-	# Einschlag: Schadenszahl, Punch, Flash, HP-Balken senken
-	_spawn_float("-%d" % share, fw_bar.global_position + Vector2(fw_bar.size.x * 0.5, -8), C_DANGER)
-	fw_bar.pivot_offset = fw_bar.size / 2.0
-	var punch := create_tween()
-	punch.tween_property(fw_bar, "scale", Vector2(1.04, 1.2), 0.05)
-	punch.tween_property(fw_bar, "scale", Vector2(1, 1), 0.14)
-	if fw_panel:
-		var flash := create_tween()
-		flash.tween_property(fw_panel, "modulate", Color(1.6, 1.2, 1.2), 0.05)
-		flash.tween_property(fw_panel, "modulate", Color(1, 1, 1), 0.18)
-	var hp := create_tween()
-	hp.tween_property(fw_bar, "value", target_hp, 0.22).set_trans(Tween.TRANS_CUBIC)
-	await hp.finished
+	var t := create_tween()
+	for i in range(4):
+		t.tween_property(game_root, "position", Vector2(randf_range(-amount, amount), randf_range(-amount, amount)), 0.03)
+	t.tween_property(game_root, "position", Vector2.ZERO, 0.05)
 
 
 # =============================================================
@@ -937,6 +870,9 @@ func _travel_and_hit(res: Dictionary, share: int, target_hp: float, detailed: bo
 func refresh() -> void:
 	if gm == null or menu_root == null:
 		return
+	# Während eines laufenden Drags nicht neu aufbauen (würde die Drag-Quelle löschen).
+	if is_inside_tree() and get_viewport().gui_is_dragging():
+		return
 
 	var phase = gm.phase
 	var in_menu = phase == gm.GamePhase.HOMESCREEN
@@ -945,32 +881,39 @@ func refresh() -> void:
 	shop_root.visible = phase == gm.GamePhase.SHOP
 	over_root.visible = phase == gm.GamePhase.GAMEOVER
 	reward_root.visible = phase == gm.GamePhase.REWARD
-	victory_root.visible = phase == gm.GamePhase.VICTORY
-	if dialog_root:
-		dialog_root.visible = dialog_root.visible and phase == gm.GamePhase.BUILD
 
 	if in_menu:
-		menu_high.text = ("Highscore: %d" % gm.highscore) if gm.highscore > 0 else ""
+		var hs := []
+		if gm.highscore > 0:
+			hs.append("Highscore: %d" % gm.highscore)
+		if gm.best_level > 0:
+			hs.append("Bestes Level: %d" % gm.best_level)
+		menu_high.text = "   ".join(hs)
 		return
 
-	# Pfad-Vorschau + Schadens-Vorschau (nur beim Bauen)
-	_preview_cells = {}
-	_preview_break = Vector2i(-1, -1)
+	# Lane-/Vorschau-Daten (nur beim Bauen)
+	_powered = {}
+	_lane_by_row = {}
+	_orphan_cells = {}
+	_hint_start = false
 	if phase == gm.GamePhase.BUILD:
-		var pv = gm.compute_send()
-		var ppath: Array = pv.get("path", [])
-		for step in ppath:
-			_preview_cells[Vector2i(step.col, step.row)] = true
-		if not pv.get("reached_end", false) and not ppath.is_empty():
-			var last = ppath[ppath.size() - 1]
-			_preview_break = Vector2i(last.col, last.row)
-		_update_preview_label(pv)
+		var res = gm.compute_send()
+		for lr in res.lanes:
+			_lane_by_row[lr.row] = lr
+			for step in lr.path:
+				_powered[Vector2i(step.col, step.row)] = true
+		for rr in range(4):
+			for cc in range(6):
+				if gm.board.get_block(cc, rr) != null and not _powered.has(Vector2i(cc, rr)):
+					_orphan_cells[Vector2i(cc, rr)] = true
+		_hint_start = res.lanes.is_empty()
+		_update_preview_label(res)
 	else:
 		if preview_lbl:
 			preview_lbl.text = ""
 
 	# HUD
-	lbl_round.text = ("Vorbereitung" if gm.level == 0 else "Level %d/%d  •  Runde %d/%d" % [gm.level, gm.WIN_LEVEL, gm.round_in_level, gm.ROUNDS_PER_LEVEL])
+	lbl_round.text = ("Vorbereitung" if gm.level == 0 else "Level %d  •  Runde %d/%d" % [gm.level, gm.round_in_level, gm.ROUNDS_PER_LEVEL])
 	lbl_money.text = "Geld: %d" % gm.money
 	lbl_score.text = "Score: %d" % gm.score
 
@@ -980,8 +923,8 @@ func refresh() -> void:
 		fw_title.text = "FIREWALL  Level %d" % fw.level
 		fw_bar.max_value = max(1, fw.max_health)
 		fw_bar.value = fw.health
-		fw_hp.text = "%d / %d HP   -   %d Pakete/Runde" % [fw.health, fw.max_health, fw.packets_per_round]
-		fw_mod.text = ("! %s: %s" % [fw.modifier_name, fw.modifier_desc]) if fw.has_modifier() else ""
+		fw_hp.text = "%d / %d HP" % [fw.health, fw.max_health]
+		fw_mod.text = ("! %s" % fw.modifier_label) if fw.has_modifier() else ""
 	else:
 		fw_title.text = "FIREWALL"
 		fw_bar.max_value = 1
@@ -990,8 +933,9 @@ func refresh() -> void:
 		fw_mod.text = ""
 
 	_refresh_cells()
+	_refresh_lane_chips()
 
-	# Hitze (Netzteile + Wärmeleitpaste-Relikt heben das Limit) – gleiche Quelle wie die Berechnung
+	# Hitze
 	var heat = gm.board.get_total_heat()
 	var hlimit = gm.effective_heat_limit()
 	heat_bar.max_value = max(1, hlimit)
@@ -1005,8 +949,7 @@ func refresh() -> void:
 		heat_lbl.add_theme_color_override("font_color", C_WARN)
 		heat_bar.add_theme_stylebox_override("fill", _sb(C_WARN, Color(0,0,0,0), 0, 6, 0))
 
-	_refresh_inventory()
-
+	_refresh_tray()
 	send_btn.disabled = phase != gm.GamePhase.BUILD
 
 	if gm.get("ui_message") != null and gm.ui_message != "":
@@ -1016,104 +959,127 @@ func refresh() -> void:
 		_refresh_shop()
 	if phase == gm.GamePhase.REWARD:
 		_refresh_reward()
-	if phase == gm.GamePhase.VICTORY:
-		victory_score.text = "Score: %d" % gm.score
 	if phase == gm.GamePhase.GAMEOVER:
-		over_round.text = "Erreichtes Level: %d / %d" % [gm.level, gm.WIN_LEVEL]
+		over_round.text = "Erreichtes Level: %d" % gm.level
 		over_score.text = "Score: %d" % gm.score
-		over_high.text = ("* NEUER HIGHSCORE *" if (gm.score >= gm.highscore and gm.score > 0) else "Highscore: %d" % gm.highscore)
-	if dialog_root and dialog_root.visible:
-		_refresh_dialog()
+		over_high.text = ("* NEUER HIGHSCORE *" if (gm.score >= gm.highscore and gm.score > 0) else "Highscore: %d  •  Bestes Level: %d" % [gm.highscore, gm.best_level])
+
+	rail_overlay.queue_redraw()
+	wire_overlay.queue_redraw()
 
 
-# Text der Schadens-Vorschau unter dem Senden-Button.
-func _update_preview_label(pv: Dictionary) -> void:
+func _update_preview_label(res: Dictionary) -> void:
 	if preview_lbl == null:
 		return
-	var ppath: Array = pv.get("path", [])
-	if ppath.is_empty():
-		preview_lbl.add_theme_color_override("font_color", C_DANGER)
-		preview_lbl.text = "Kein Pfad: setze in Spalte 0 einen Block mit Eingang nach links."
+	var lanes: Array = res.get("lanes", [])
+	if lanes.is_empty():
+		preview_lbl.add_theme_color_override("font_color", C_WARN)
+		preview_lbl.text = "Zieh ein Bauteil in Spalte 1 einer Zeile, um eine Lane zu starten."
 		return
-	var per_packet = int(pv.get("per_packet", 0))
-	var packets = int(pv.get("packets", 1))
-	var dmg = int(pv.get("total_damage", 0))
-	var reached = pv.get("reached_end", false)
-	var oh = "  •  ÜBERHITZT" if pv.get("overheated", false) else ""
-	var reach_hint = "" if reached else "  (Ziel nicht erreicht)"
+	var packets = int(res.get("packets", 0))
+	var dmg = int(res.get("total_damage", 0))
+	var oh = "  •  ÜBERHITZT" if res.get("overheated", false) else ""
 	var win = gm.firewall != null and dmg >= gm.firewall.health
-	var verdict = "reicht zum Knacken" if win else "reicht NICHT – sonst Game Over"
-	preview_lbl.text = "Vorschau: %d × %d Pakete = ~%d Schaden  •  %s%s%s" % [per_packet, packets, dmg, verdict, reach_hint, oh]
+	var verdict = "reicht zum Knacken" if win else "reicht NICHT"
+	preview_lbl.text = "%d Lane(s) → %d Schaden%s\n%s (Firewall: %d HP)" % [packets, dmg, oh, verdict, (gm.firewall.health if gm.firewall else 0)]
 	preview_lbl.add_theme_color_override("font_color", C_ACCENT2 if win else C_DANGER)
 
 
 func _refresh_cells() -> void:
 	for r in range(4):
 		for c in range(6):
-			var panel: Panel = cell_root[r][c]
+			var cell: BoardCell = cell_root[r][c]
 			var char_lbl: Label = cell_char[r][c]
-			var in_lbl: Label = cell_in[r][c]
-			var out_lbl: Label = cell_out[r][c]
-			var info_btn: Button = cell_info[r][c]
 			var b = gm.board.get_block(c, r)
+			cell.has_block = b != null
+			cell.drag_type = b.type if b != null else -1
 			if b == null:
-				panel.add_theme_stylebox_override("panel", _sb(C_CELL, Color(1,1,1,0.06), 1, 8, 0))
-				char_lbl.text = ""
-				in_lbl.text = ""
-				out_lbl.text = ""
-				info_btn.visible = false
+				if _hint_start and c == 0:
+					cell.add_theme_stylebox_override("panel", _sb(C_CELL, C_ACCENT2, 2, 8, 0))
+					char_lbl.text = "+"
+					char_lbl.add_theme_color_override("font_color", Color(C_ACCENT2.r, C_ACCENT2.g, C_ACCENT2.b, 0.55))
+				else:
+					cell.add_theme_stylebox_override("panel", _sb(C_CELL, Color(1,1,1,0.06), 1, 8, 0))
+					char_lbl.text = ""
 			else:
 				var col: Color = COMP_COLORS.get(b.type, C_PANEL2)
-				var key := Vector2i(c, r)
-				var border: Color = col.lightened(0.25)
-				var bw := 2
-				if _preview_break == key:
-					border = C_DANGER
-					bw = 4
-				elif _preview_cells.has(key):
-					border = C_ACCENT2
-					bw = 4
-				panel.add_theme_stylebox_override("panel", _sb(col.darkened(0.1), border, bw, 8, 0))
+				var powered: bool = _powered.has(Vector2i(c, r))
+				var border: Color = col.lightened(0.3) if powered else C_MUTED.darkened(0.1)
+				var bw := 3 if powered else 2
+				var bg: Color = col.darkened(0.1) if powered else col.darkened(0.45)
+				cell.add_theme_stylebox_override("panel", _sb(bg, border, bw, 8, 0))
+				char_lbl.add_theme_color_override("font_color", Color.WHITE if powered else Color(1,1,1,0.5))
 				char_lbl.text = "%s\n%s" % [Component.get_short_name(b.type), Component.get_label(b.type)]
-				in_lbl.text = Block.arrow(b.in_dir)
-				in_lbl.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
-				in_lbl.position = _edge_pos(b.in_dir)
-				out_lbl.text = Block.arrow(b.out_dir)
-				out_lbl.add_theme_color_override("font_color", C_ACCENT)
-				out_lbl.position = _edge_pos(b.out_dir)
-				info_btn.visible = true
 
 
-func _refresh_inventory() -> void:
-	for child in inv_grid.get_children():
+func _refresh_lane_chips() -> void:
+	for r in range(4):
+		var chip: Label = lane_chip[r]
+		if not _lane_by_row.has(r) or cell_root.is_empty():
+			chip.visible = false
+			continue
+		var lr = _lane_by_row[r]
+		var cell: Control = cell_root[r][5]
+		chip.visible = true
+		chip.global_position = cell.global_position + Vector2(cell.size.x + 18, cell.size.y / 2.0 - 12)
+		if lr.jammed:
+			chip.text = "JAM"
+			chip.add_theme_color_override("font_color", C_DANGER)
+		elif lr.reached_end:
+			chip.text = "%d ⚡" % int(lr.damage)
+			chip.add_theme_color_override("font_color", C_ACCENT2)
+		else:
+			chip.text = "%d" % int(lr.damage)
+			chip.add_theme_color_override("font_color", C_WARN)
+
+
+func _refresh_tray() -> void:
+	for child in tray_box.get_children():
+		tray_box.remove_child(child)
 		child.queue_free()
 	if gm.inventory == null or gm.inventory.get_item_count() == 0:
-		inv_grid.add_child(_label("(leer – im Shop kaufen)", 13, C_MUTED))
+		tray_box.add_child(_label("(leer – im Shop kaufen)", 13, C_MUTED))
 		return
+	# Nach Typ gruppieren, Reihenfolge des ersten Auftretens beibehalten.
+	var order := []
+	var groups := {}
 	for i in range(gm.inventory.get_item_count()):
 		var t = gm.inventory.peek_item(i)
-		var b := Button.new()
-		b.text = "%s\n%s" % [Component.get_short_name(t), Component.get_label(t)]
-		b.custom_minimum_size = Vector2(72, 52)
-		b.add_theme_font_size_override("font_size", 13)
-		b.tooltip_text = "%s\n%s" % [Component.get_type_name(t), Component.get_description(t)]
+		if not groups.has(t):
+			groups[t] = {"count": 0, "first": i}
+			order.append(t)
+		groups[t].count += 1
+	for t in order:
+		var g = groups[t]
+		var item := InventoryItem.new()
+		item.item_index = g.first
+		item.comp_type = t
+		item.custom_minimum_size = Vector2(86, 54)
+		item.tooltip_text = "%s\n%s" % [Component.get_type_name(t), Component.get_description(t)]
 		var base: Color = COMP_COLORS.get(t, C_PANEL2)
-		if i == selected_inv_index:
-			_style_button(b, base.darkened(0.05))
-		else:
-			_style_button(b, base.darkened(0.5))
-		b.pressed.connect(_on_inv_select.bind(i))
-		inv_grid.add_child(b)
+		var selected: bool = g.first == selected_inv_index
+		item.add_theme_stylebox_override("panel", _sb(base.darkened(0.05 if selected else 0.5), base.lightened(0.2) if selected else base.darkened(0.2), 2 if selected else 1, 8, 6))
+		item.picked.connect(_on_inv_select)
+		var vb := VBoxContainer.new()
+		vb.add_theme_constant_override("separation", 0)
+		vb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		item.add_child(vb)
+		var name_lbl := _label("%s ×%d" % [Component.get_short_name(t), g.count], 13, Color.WHITE)
+		name_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		vb.add_child(name_lbl)
+		var eff_lbl := _label(Component.get_label(t), 12, C_MUTED)
+		eff_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		vb.add_child(eff_lbl)
+		tray_box.add_child(item)
 
 
 func _refresh_shop() -> void:
 	shop_money.text = "Geld: %d" % gm.money
-
-	# Reroll-Button
 	shop_reroll_btn.text = "Neu würfeln (%d G)" % gm.reroll_cost
 	shop_reroll_btn.disabled = gm.money < gm.reroll_cost
+	if shop_next_btn:
+		shop_next_btn.text = ("Nächste Runde  >" if gm.after_shop == "next_round" else "Level %d starten  >" % (gm.level + 1))
 
-	# Gesammelte Relikte
 	if gm.relics.is_empty():
 		shop_relics_lbl.text = "Relikte: (noch keine)"
 	else:
@@ -1123,6 +1089,7 @@ func _refresh_shop() -> void:
 		shop_relics_lbl.text = "Relikte: " + ", ".join(names)
 
 	for child in shop_offers.get_children():
+		shop_offers.remove_child(child)
 		child.queue_free()
 	var offers = gm.shop.offers
 	if offers.is_empty():
@@ -1142,8 +1109,11 @@ func _refresh_shop() -> void:
 		h.add_child(sw)
 		var info := VBoxContainer.new()
 		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		info.add_child(_label("%s  (%dH)" % [Component.get_type_name(t), Component.get_heat(t)], 16, C_TEXT))
-		info.add_child(_label(Component.get_description(t), 12, C_MUTED))
+		info.add_child(_label("%s  (%d Hitze)" % [Component.get_type_name(t), Component.get_heat(t)], 16, C_TEXT))
+		var d := _label(Component.get_description(t), 12, C_MUTED)
+		d.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		d.custom_minimum_size = Vector2(300, 0)
+		info.add_child(d)
 		h.add_child(info)
 		var buy := Button.new()
 		buy.text = "%d G" % offer.price
@@ -1155,3 +1125,68 @@ func _refresh_shop() -> void:
 		buy.pressed.connect(_on_buy.bind(i))
 		h.add_child(buy)
 		shop_offers.add_child(row)
+
+
+# =============================================================
+#  BOARD-GRAFIK (Overlays)
+# =============================================================
+
+func _to_local(overlay: Control, gp: Vector2) -> Vector2:
+	return overlay.get_global_transform().affine_inverse() * gp
+
+func _row_center_y(overlay: Control, r: int) -> float:
+	var cell: Control = cell_root[r][0]
+	return _to_local(overlay, cell.global_position).y + cell.size.y / 2.0
+
+# HINTER den Zellen: Schienen (Grooves) + Ein-/Ausgangssockel je Zeile.
+func _draw_rails() -> void:
+	if cell_root.is_empty() or gm == null:
+		return
+	var rail_style := _sb(Color(0.05, 0.06, 0.09), Color(1,1,1,0.04), 1, 14, 0)
+	for r in range(4):
+		var c0: Control = cell_root[r][0]
+		var c5: Control = cell_root[r][5]
+		var left := _to_local(rail_overlay, c0.global_position)
+		var right := _to_local(rail_overlay, c5.global_position + Vector2(c5.size.x, 0))
+		var cy := left.y + c0.size.y / 2.0
+		var rail := Rect2(Vector2(left.x - 20, cy - 32), Vector2((right.x + 20) - (left.x - 20), 64))
+		rail_overlay.draw_style_box(rail_style, rail)
+		var active: bool = _lane_by_row.has(r)
+		var lane = _lane_by_row.get(r, null)
+		var broke: bool = active and lane != null and lane.reached_end
+		# Eingangssockel links
+		var in_c := Vector2(left.x - 12, cy)
+		rail_overlay.draw_circle(in_c, 9, C_ACCENT2 if active else C_MUTED.darkened(0.25))
+		rail_overlay.draw_circle(in_c, 4, C_BG)
+		# Ausgangssockel rechts
+		var out_c := Vector2(right.x + 12, cy)
+		var out_col: Color = C_ACCENT2 if broke else (C_WARN.darkened(0.05) if active else C_MUTED.darkened(0.25))
+		rail_overlay.draw_circle(out_c, 9, out_col)
+		rail_overlay.draw_circle(out_c, 4, C_BG)
+
+# VOR den Zellen: Kabel in den Lücken zwischen benachbarten Blöcken + Abbruch-Kappe.
+func _draw_wires() -> void:
+	if cell_root.is_empty() or gm == null:
+		return
+	for r in range(4):
+		var cy := _row_center_y(wire_overlay, r)
+		for c in range(5):
+			if gm.board.get_block(c, r) == null or gm.board.get_block(c + 1, r) == null:
+				continue
+			var a: Control = cell_root[r][c]
+			var b: Control = cell_root[r][c + 1]
+			var pa := _to_local(wire_overlay, a.global_position + Vector2(a.size.x, a.size.y / 2.0))
+			var pb := _to_local(wire_overlay, b.global_position + Vector2(0, b.size.y / 2.0))
+			var powered: bool = _powered.has(Vector2i(c, r)) and _powered.has(Vector2i(c + 1, r))
+			if powered:
+				wire_overlay.draw_line(pa, pb, Color(C_ACCENT.r, C_ACCENT.g, C_ACCENT.b, 0.35), 8.0)
+				wire_overlay.draw_line(pa, pb, C_ACCENT, 4.0)
+			else:
+				wire_overlay.draw_line(pa, pb, C_MUTED.darkened(0.1), 3.0)
+		# Abbruch-Kappe: aktive Lane, die den Rand NICHT erreicht.
+		var lane = _lane_by_row.get(r, null)
+		if lane != null and not lane.reached_end and int(lane.stop_col) < 6 and not lane.path.is_empty():
+			var sc := int(lane.stop_col)
+			var lastc: Control = cell_root[r][sc - 1]
+			var cap_x := _to_local(wire_overlay, lastc.global_position + Vector2(lastc.size.x, 0)).x + 4
+			wire_overlay.draw_line(Vector2(cap_x, cy - 15), Vector2(cap_x, cy + 15), C_WARN, 3.0)

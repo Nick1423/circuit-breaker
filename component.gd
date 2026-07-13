@@ -1,7 +1,7 @@
 # Circuit Breaker - Bauteil-Definitionen (zentrale Datenquelle)
 #
 # Echte IT-Bauteile mit klarer Funktion. Jeder Typ hat: Kurzname (Badge auf dem
-# Block), Effekt-Label, Beschreibung, Watt, Hitze und Basispreis.
+# Block), Effekt-Label, Beschreibung, Hitze und Basispreis.
 #
 # Effekte:
 #   TRACE (Leiterbahn) : +0, nur Routing
@@ -84,12 +84,6 @@ const _DESCRIPTIONS := {
 	ComponentType.MAINBOARD: "Mainboard: kein Effekt aufs einzelne Feld, erhöht aber den gesamten Paketwert um +50% je Mainboard auf dem Board.",
 }
 
-const _WATT := {
-	ComponentType.TRACE: 0, ComponentType.CPU: 2, ComponentType.RAM: 3,
-	ComponentType.GPU: 5, ComponentType.NPU: 4, ComponentType.CACHE: 3,
-	ComponentType.HEATSINK: 1, ComponentType.PSU: 2, ComponentType.MAINBOARD: 3,
-}
-
 const _HEAT := {
 	ComponentType.TRACE: 0, ComponentType.CPU: 1, ComponentType.RAM: 1,
 	ComponentType.GPU: 3, ComponentType.NPU: 2, ComponentType.CACHE: 2,
@@ -111,13 +105,6 @@ static func get_short_name(type: int) -> String:
 
 static func get_label(type: int) -> String:
 	return _LABELS.get(type, "?")
-
-# Alias – für Konsolen-Ausgaben.
-static func get_display_char(type: int) -> String:
-	return _SHORT.get(type, "?")
-
-static func get_watt_cost(type: int) -> int:
-	return _WATT.get(type, 0)
 
 static func get_heat(type: int) -> int:
 	return _HEAT.get(type, 0)
