@@ -37,10 +37,12 @@ var overheat_factor: float = 1.0   # MELTDOWN: verstärkt den Überhitzungs-Malu
 var jammer_factor: float = 1.0     # JAMMER: dämpft gelieferten Schaden (1.0 = keine Störung)
 
 
-# Unendliche HP-Kurve: früh sanft (+25%/Level), ab Level 10 zusätzlich versteilt.
+# Unendliche HP-Kurve. Auf den transparenten (niedrigeren) Schaden abgestimmt:
+# Level 1 klar mit ein paar CPUs schaffbar, danach stetig +22%/Level und ab
+# Level 12 zusätzlich versteilt – bleibt endlos, verlangt aber Käufe + Übertaktung.
 static func firewall_hp(l: int) -> int:
-	var base := 32.0 * pow(1.25, l - 1)
-	var accel := pow(1.06, max(0, l - 10))
+	var base := 22.0 * pow(1.22, l - 1)
+	var accel := pow(1.05, max(0, l - 12))
 	return int(round(base * accel))
 
 

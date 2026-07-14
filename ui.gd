@@ -79,6 +79,12 @@ var shop_offers: VBoxContainer
 var shop_reroll_btn: Button
 var shop_next_btn: Button
 var shop_relics_lbl: Label
+var tab_buy_btn: Button
+var tab_oc_btn: Button
+var shop_buy_view: Control       # Container der Kauf-Angebote
+var overclock_view: Control      # Container der Overclock-Werkstatt
+var overclock_box: VBoxContainer
+var shop_hint_lbl: Label
 
 # Belohnung
 var reward_cards: HBoxContainer
@@ -94,6 +100,7 @@ var preview_lbl: Label
 
 # Zustand
 var selected_inv_index := -1
+var _shop_tab := "buy"          # "buy" | "overclock"
 var _animating := false
 # Vorschau beim Bauen
 var _route := {}              # Ergebnis aus compute_send()
@@ -455,11 +462,55 @@ func _build_shop() -> void:
 	shop_money = _label("Geld: 0", 20, C_WARN)
 	head.add_child(shop_money)
 	v.add_child(head)
-	v.add_child(_label("Gekaufte Bausteine landen im Inventar-Fach.", 14, C_MUTED))
+
+	# Tabs: Kaufen | Overclock-Werkstatt
+	var tabs := HBoxContainer.new()
+	tabs.add_theme_constant_override("separation", 8)
+	v.add_child(tabs)
+	tab_buy_btn = Button.new()
+	tab_buy_btn.text = "Kaufen"
+	tab_buy_btn.custom_minimum_size = Vector2(0, 38)
+	tab_buy_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tab_buy_btn.add_theme_font_size_override("font_size", 15)
+	tab_buy_btn.pressed.connect(_on_shop_tab.bind("buy"))
+	tabs.add_child(tab_buy_btn)
+	tab_oc_btn = Button.new()
+	tab_oc_btn.text = "Overclock-Werkstatt"
+	tab_oc_btn.custom_minimum_size = Vector2(0, 38)
+	tab_oc_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tab_oc_btn.add_theme_font_size_override("font_size", 15)
+	tab_oc_btn.pressed.connect(_on_shop_tab.bind("overclock"))
+	tabs.add_child(tab_oc_btn)
+
+	shop_hint_lbl = _label("", 14, C_MUTED)
+	shop_hint_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	v.add_child(shop_hint_lbl)
+
+	# Inhaltsbereich: entweder Kauf-Angebote oder Overclock-Werkstatt
+	var content := Control.new()
+	content.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	content.custom_minimum_size = Vector2(0, 300)
+	v.add_child(content)
+
+	shop_buy_view = VBoxContainer.new()
+	_full(shop_buy_view)
+	content.add_child(shop_buy_view)
 	shop_offers = VBoxContainer.new()
 	shop_offers.add_theme_constant_override("separation", 8)
 	shop_offers.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	v.add_child(shop_offers)
+	shop_buy_view.add_child(shop_offers)
+
+	overclock_view = VBoxContainer.new()
+	_full(overclock_view)
+	content.add_child(overclock_view)
+	var oc_scroll := ScrollContainer.new()
+	oc_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	oc_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	overclock_view.add_child(oc_scroll)
+	overclock_box = VBoxContainer.new()
+	overclock_box.add_theme_constant_override("separation", 8)
+	overclock_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	oc_scroll.add_child(overclock_box)
 
 	shop_relics_lbl = _label("", 13, C_ACCENT2)
 	shop_relics_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -594,6 +645,7 @@ func _build_over() -> void:
 
 func _on_play() -> void:
 	selected_inv_index = -1
+	_shop_tab = "buy"
 	gm.start_new_run()
 	refresh()
 
@@ -609,6 +661,14 @@ func _on_buy(index: int) -> void:
 
 func _on_reroll() -> void:
 	gm.reroll_shop()
+	refresh()
+
+func _on_shop_tab(tab: String) -> void:
+	_shop_tab = tab
+	refresh()
+
+func _on_upgrade(index: int) -> void:
+	gm.upgrade_block(index)
 	refresh()
 
 func _on_sell() -> void:
@@ -655,8 +715,11 @@ func _on_cell_drop(c: int, r: int, data: Dictionary) -> void:
 			var idx: int = int(data.get("index", -1))
 			if idx < 0 or idx >= gm.inventory.get_item_count():
 				return
-			var t: int = gm.inventory.peek_item(idx)
-			if gm.board.place_component(c, r, t):
+			var blk = gm.inventory.peek_item(idx)
+			if blk == null:
+				return
+			# Block-Instanz umsetzen -> Übertaktungsstufe bleibt erhalten.
+			if gm.board.put_block(c, r, blk):
 				gm.inventory.take_item(idx)
 				gm.stats.components_placed += 1
 				selected_inv_index = -1
@@ -688,12 +751,13 @@ func _return_block(c: int, r: int) -> void:
 	if gm.inventory and gm.inventory.get_item_count() >= gm.inventory.max_size:
 		_set_msg("Inventar voll – kein Platz zum Zurücklegen.")
 		return
-	var t = gm.board.remove_component(c, r)
-	if t >= 0 and gm.inventory:
-		if gm.inventory.add_item(t):
-			_set_msg("Zurück ins Inventar: %s" % Component.get_type_name(t))
+	var b = gm.board.take_block(c, r)
+	if b != null and gm.inventory:
+		# Block-Instanz zurücklegen -> Übertaktungsstufe bleibt erhalten.
+		if gm.inventory.add_block(b):
+			_set_msg("Zurück ins Inventar: %s%s" % [Component.get_type_name(b.type), UIStyle.tier_badge(b.tier)])
 		else:
-			gm.board.place_component(c, r, t)  # Feld ist jetzt leer -> gelingt immer
+			gm.board.put_block(c, r, b)  # Feld ist jetzt leer -> gelingt immer
 			_set_msg("Inventar voll.")
 	refresh()
 
@@ -705,12 +769,12 @@ func _try_place(c: int, r: int) -> void:
 		selected_inv_index = -1
 		refresh()
 		return
-	var t = gm.inventory.peek_item(selected_inv_index)
-	if gm.board.place_component(c, r, t):
+	var blk = gm.inventory.peek_item(selected_inv_index)
+	if blk != null and gm.board.put_block(c, r, blk):
 		gm.inventory.take_item(selected_inv_index)
 		gm.stats.components_placed += 1
 		selected_inv_index = -1
-		_set_msg("Platziert: %s. Klick den Block, um den Ausgang zu drehen." % Component.get_type_name(t))
+		_set_msg("Platziert: %s. Klick den Block, um den Ausgang zu drehen." % Component.get_type_name(blk.type))
 	else:
 		_set_msg("Dieses Feld ist belegt.")
 	refresh()
@@ -1015,6 +1079,7 @@ func _refresh_cells() -> void:
 			var b = gm.board.get_block(c, r)
 			cell.has_block = b != null
 			cell.drag_type = b.type if b != null else -1
+			cell.drag_tier = b.tier if b != null else 0
 			if b == null:
 				var is_gate: bool = (r == MID) and (c == 0)
 				if _hint_start and is_gate:
@@ -1029,13 +1094,14 @@ func _refresh_cells() -> void:
 			else:
 				var col: Color = COMP_COLORS.get(b.type, C_PANEL2)
 				var powered: bool = _on_path.has(Vector2i(c, r))
-				var border: Color = col.lightened(0.3) if powered else C_MUTED.darkened(0.1)
-				var bw := 3 if powered else 2
+				# Übertaktete Blöcke bekommen einen goldenen Rahmen.
+				var border: Color = (C_WARN if b.tier > 0 else col.lightened(0.3)) if powered else (C_WARN.darkened(0.2) if b.tier > 0 else C_MUTED.darkened(0.1))
+				var bw := 3 if (powered or b.tier > 0) else 2
 				var bg: Color = col.darkened(0.1) if powered else col.darkened(0.45)
 				cell.add_theme_stylebox_override("panel", _sb(bg, border, bw, 8, 0))
-				char_lbl.add_theme_font_size_override("font_size", 15)
+				char_lbl.add_theme_font_size_override("font_size", 14)
 				char_lbl.add_theme_color_override("font_color", Color.WHITE if powered else Color(1,1,1,0.5))
-				char_lbl.text = "%s\n%s" % [Component.get_short_name(b.type), Component.get_label(b.type)]
+				char_lbl.text = "%s%s\n%s" % [Component.get_short_name(b.type), UIStyle.tier_badge(b.tier), Component.get_label(b.type, b.tier)]
 
 
 # Positioniert die Sockel-Labels und die Ausgangs-Schadenszahl.
@@ -1068,34 +1134,39 @@ func _refresh_tray() -> void:
 	if gm.inventory == null or gm.inventory.get_item_count() == 0:
 		tray_box.add_child(_label("(leer – im Shop kaufen)", 13, C_MUTED))
 		return
-	# Nach Typ gruppieren, Reihenfolge des ersten Auftretens beibehalten.
+	# Nach (Typ, Tier) gruppieren, Reihenfolge des ersten Auftretens beibehalten.
 	var order := []
 	var groups := {}
 	for i in range(gm.inventory.get_item_count()):
-		var t = gm.inventory.peek_item(i)
-		if not groups.has(t):
-			groups[t] = {"count": 0, "first": i}
-			order.append(t)
-		groups[t].count += 1
-	for t in order:
-		var g = groups[t]
+		var b = gm.inventory.peek_item(i)
+		var key := Vector2i(b.type, b.tier)
+		if not groups.has(key):
+			groups[key] = {"count": 0, "first": i, "type": b.type, "tier": b.tier}
+			order.append(key)
+		groups[key].count += 1
+	for key in order:
+		var g = groups[key]
+		var t: int = g.type
+		var tier: int = g.tier
 		var item := InventoryItem.new()
 		item.item_index = g.first
 		item.comp_type = t
-		item.custom_minimum_size = Vector2(86, 54)
-		item.tooltip_text = "%s\n%s" % [Component.get_type_name(t), Component.get_description(t)]
+		item.comp_tier = tier
+		item.custom_minimum_size = Vector2(88, 54)
+		item.tooltip_text = "%s%s\n%s" % [Component.get_type_name(t), UIStyle.tier_badge(tier), Component.get_description(t)]
 		var base: Color = COMP_COLORS.get(t, C_PANEL2)
 		var selected: bool = g.first == selected_inv_index
-		item.add_theme_stylebox_override("panel", _sb(base.darkened(0.05 if selected else 0.5), base.lightened(0.2) if selected else base.darkened(0.2), 2 if selected else 1, 8, 6))
+		var bcol: Color = C_WARN if tier > 0 else (base.lightened(0.2) if selected else base.darkened(0.2))
+		item.add_theme_stylebox_override("panel", _sb(base.darkened(0.05 if selected else 0.5), bcol, 2 if (selected or tier > 0) else 1, 8, 6))
 		item.picked.connect(_on_inv_select)
 		var vb := VBoxContainer.new()
 		vb.add_theme_constant_override("separation", 0)
 		vb.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		item.add_child(vb)
-		var name_lbl := _label("%s ×%d" % [Component.get_short_name(t), g.count], 13, Color.WHITE)
+		var name_lbl := _label("%s%s ×%d" % [Component.get_short_name(t), UIStyle.tier_badge(tier), g.count], 13, Color.WHITE)
 		name_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		vb.add_child(name_lbl)
-		var eff_lbl := _label(Component.get_label(t), 12, C_MUTED)
+		var eff_lbl := _label(Component.get_label(t, tier), 12, C_MUTED)
 		eff_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		vb.add_child(eff_lbl)
 		tray_box.add_child(item)
@@ -1104,9 +1175,21 @@ func _refresh_tray() -> void:
 func _refresh_shop() -> void:
 	shop_money.text = "Geld: %d" % gm.money
 	shop_reroll_btn.text = "Neu würfeln (%d G)" % gm.reroll_cost
-	shop_reroll_btn.disabled = gm.money < gm.reroll_cost
+	shop_reroll_btn.disabled = gm.money < gm.reroll_cost or _shop_tab != "buy"
+	shop_reroll_btn.visible = _shop_tab == "buy"
 	if shop_next_btn:
 		shop_next_btn.text = ("Nächste Runde  >" if gm.after_shop == "next_round" else "Level %d starten  >" % (gm.level + 1))
+
+	# Tab-Zustand
+	var on_buy := _shop_tab == "buy"
+	shop_buy_view.visible = on_buy
+	overclock_view.visible = not on_buy
+	_style_button(tab_buy_btn, C_ACCENT2.darkened(0.3) if on_buy else C_PANEL2)
+	_style_button(tab_oc_btn, C_PANEL2 if on_buy else C_WARN.darkened(0.35))
+	shop_hint_lbl.text = ("Gekaufte Bausteine landen im Inventar-Fach." if on_buy
+		else "Werte Bausteine gegen Geld auf – höhere Stufe = stärkerer Effekt. TRACE ist nicht übertaktbar.")
+	if not on_buy:
+		_refresh_overclock()
 
 	if gm.relics.is_empty():
 		shop_relics_lbl.text = "Relikte: (noch keine)"
@@ -1154,6 +1237,65 @@ func _refresh_shop() -> void:
 		buy.pressed.connect(_on_buy.bind(i))
 		h.add_child(buy)
 		shop_offers.add_child(row)
+
+
+# Overclock-Werkstatt: Inventar nach (Typ,Tier) gruppiert, je Gruppe ein Aufwerten-Knopf.
+func _refresh_overclock() -> void:
+	for child in overclock_box.get_children():
+		overclock_box.remove_child(child)
+		child.queue_free()
+	if gm.inventory == null or gm.inventory.get_item_count() == 0:
+		overclock_box.add_child(_label("Inventar leer – kaufe zuerst Bausteine im Kauf-Tab.", 15, C_MUTED))
+		return
+
+	var order := []
+	var groups := {}
+	for i in range(gm.inventory.get_item_count()):
+		var b = gm.inventory.peek_item(i)
+		var key := Vector2i(b.type, b.tier)
+		if not groups.has(key):
+			groups[key] = {"count": 0, "first": i, "type": b.type, "tier": b.tier}
+			order.append(key)
+		groups[key].count += 1
+
+	for key in order:
+		var g = groups[key]
+		var t: int = g.type
+		var tier: int = g.tier
+		var cost: int = Component.get_upgrade_cost(t, tier)
+		var row := PanelContainer.new()
+		row.add_theme_stylebox_override("panel", _sb(C_PANEL2, COMP_COLORS.get(t, C_PANEL2).darkened(0.2), 1, 8, 8))
+		var h := HBoxContainer.new()
+		h.add_theme_constant_override("separation", 12)
+		row.add_child(h)
+		var sw := _label("%s%s\n×%d" % [Component.get_short_name(t), UIStyle.tier_badge(tier), g.count], 15, Color.WHITE)
+		sw.custom_minimum_size = Vector2(70, 0)
+		sw.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		h.add_child(sw)
+		var info := VBoxContainer.new()
+		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		info.add_child(_label("%s  (Stufe %d)" % [Component.get_type_name(t), tier], 16, C_TEXT))
+		if cost < 0:
+			var reason := "nicht übertaktbar" if not Component.is_upgradeable(t) else "Maximalstufe erreicht"
+			info.add_child(_label("%s → %s" % [Component.get_label(t, tier), reason], 13, C_MUTED))
+		else:
+			info.add_child(_label("%s  →  %s" % [Component.get_label(t, tier), Component.get_label(t, tier + 1)], 13, C_ACCENT2))
+		h.add_child(info)
+		var up := Button.new()
+		up.custom_minimum_size = Vector2(110, 44)
+		up.add_theme_font_size_override("font_size", 15)
+		if cost < 0:
+			up.text = "—"
+			up.disabled = true
+			_style_button(up, C_PANEL)
+		else:
+			up.text = "Stufe %d\n%d G" % [tier + 1, cost]
+			var affordable: bool = gm.money >= cost
+			up.disabled = not affordable
+			_style_button(up, C_WARN.darkened(0.4) if affordable else C_PANEL)
+			up.pressed.connect(_on_upgrade.bind(g.first))
+		h.add_child(up)
+		overclock_box.add_child(row)
 
 
 # =============================================================

@@ -57,13 +57,13 @@ func get_component(col: int, row: int):
 
 # Platziert einen neuen Block eines Typs (Standard-Ausgang: Osten).
 # Gibt true bei Erfolg zurück.
-func place_component(col: int, row: int, type: int, dir: int = Block.Dir.EAST) -> bool:
+func place_component(col: int, row: int, type: int, dir: int = Block.Dir.EAST, tier: int = 0) -> bool:
 	if not _is_in_bounds(col, row):
 		push_warning("Platzierung außerhalb des Bretts: (%d,%d)" % [col, row])
 		return false
 	if board[row][col] != null:
 		return false
-	board[row][col] = Block.new(type, dir)
+	board[row][col] = Block.new(type, dir, tier)
 	return true
 
 
@@ -140,32 +140,33 @@ func get_total_heat() -> int:
 				continue
 			var h = Component.get_heat(b.type)
 			for d in deltas:
-				if get_component(col + d[1], row + d[0]) == Component.ComponentType.HEATSINK:
-					h -= Component.COOLER_STRENGTH
+				var nb = get_block(col + d[1], row + d[0])
+				if nb != null and nb.type == Component.ComponentType.HEATSINK:
+					h -= Component.cooler_strength(nb.tier)
 			total += max(0, h)
 	return total
 
 
-# Bonus aufs Hitze-Limit durch platzierte Netzteile (+3 je PSU).
+# Bonus aufs Hitze-Limit durch platzierte Netzteile (+3 je PSU, mehr bei Übertaktung).
 func get_power_bonus() -> int:
-	var count = 0
+	var bonus = 0
 	for row in range(BOARD_HEIGHT):
 		for col in range(BOARD_WIDTH):
 			var b = board[row][col]
 			if b != null and b.type == Component.ComponentType.PSU:
-				count += 1
-	return count * Component.PSU_HEAT_BONUS
+				bonus += Component.psu_bonus(b.tier)
+	return bonus
 
 
-# Endschaden-Multiplikator durch platzierte Mainboards (+50% je Stück).
+# Endschaden-Multiplikator durch platzierte Mainboards (+50% je Stück, mehr bei Übertaktung).
 func get_board_multiplier() -> float:
-	var count = 0
+	var mult = 1.0
 	for row in range(BOARD_HEIGHT):
 		for col in range(BOARD_WIDTH):
 			var b = board[row][col]
 			if b != null and b.type == Component.ComponentType.MAINBOARD:
-				count += 1
-	return 1.0 + count * Component.MAINBOARD_BONUS
+				mult += Component.mainboard_bonus(b.tier)
+	return mult
 
 
 # ---- Paket-Routing: EIN Paket folgt den Ausgangsrichtungen ----
@@ -186,6 +187,7 @@ func simulate_route(start_value: int = 1) -> Dictionary:
 	var col := 0
 	var row := MID_ROW
 	var prev_type := -1
+	var prev_tier := 0
 	var visited := {}
 	var delivered := false
 	var reason := "empty"
@@ -215,18 +217,20 @@ func simulate_route(start_value: int = 1) -> Dictionary:
 		var idx: int = path.size()  # Anzahl bereits durchlaufener Blöcke
 		match b.type:
 			Component.ComponentType.CACHE:
-				# Cache wiederholt den Effekt des vorherigen Blocks im Pfad.
+				# Cache wiederholt den Effekt des vorherigen Blocks (tier = wie oft).
 				if prev_type != -1:
-					value = Component.process_packet(prev_type, value)
+					for _i in range(Component.cache_repeats(b.tier)):
+						value = Component.process_packet(prev_type, value, prev_tier)
 			Component.ComponentType.RAM:
-				# RAM: +2 je bereits durchlaufenem Baustein.
-				value += 2 * idx
+				# RAM: +2 (bzw. mehr bei Übertaktung) je bereits durchlaufenem Baustein.
+				value += Component.ram_per(b.tier) * idx
 			_:
-				value = Component.process_packet(b.type, value)
+				value = Component.process_packet(b.type, value, b.tier)
 		prev_type = b.type
+		prev_tier = b.tier
 		path.append({
 			"col": col, "row": row, "before": before, "after": value,
-			"type": b.type, "dir": b.out_dir,
+			"type": b.type, "dir": b.out_dir, "tier": b.tier,
 		})
 
 		var d := Block.dir_delta(b.out_dir)

@@ -10,10 +10,11 @@ signal picked(index: int)
 
 var item_index: int = -1
 var comp_type: int = -1
+var comp_tier: int = 0
 
 
 func _get_drag_data(_at_position: Vector2) -> Variant:
-	set_drag_preview(UIStyle.drag_preview(comp_type))
+	set_drag_preview(UIStyle.drag_preview(comp_type, comp_tier))
 	return {"kind": "inventory", "type": comp_type, "index": item_index}
 
 

@@ -71,8 +71,13 @@ static func style_button(btn: Button, base: Color, txt := TEXT) -> void:
 	btn.add_theme_color_override("font_hover_color", Color.WHITE)
 
 
+# Kurzer Tier-Marker (★) für Anzeige/Vorschau; leer bei tier 0.
+static func tier_badge(tier: int) -> String:
+	return "" if tier <= 0 else " ★%d" % tier
+
+
 # Schwebendes Vorschau-Bild beim Ziehen eines Bauteils (folgt dem Cursor).
-static func drag_preview(type: int) -> Control:
+static func drag_preview(type: int, tier: int = 0) -> Control:
 	var root := Control.new()
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var chip := Panel.new()
@@ -80,7 +85,7 @@ static func drag_preview(type: int) -> Control:
 	chip.position = -chip.size / 2.0  # auf dem Cursor zentrieren
 	chip.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	chip.add_theme_stylebox_override("panel", sb(COMP_COLORS.get(type, PANEL2), Color.WHITE, 2, 8, 0))
-	var lbl := label("%s\n%s" % [Component.get_short_name(type), Component.get_label(type)], 13, Color.WHITE)
+	var lbl := label("%s%s\n%s" % [Component.get_short_name(type), tier_badge(tier), Component.get_label(type, tier)], 13, Color.WHITE)
 	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	lbl.size = chip.size
 	lbl.position = chip.position

@@ -30,7 +30,7 @@ const RELIC_NAMES := {
 const RELIC_DESCS := {
 	Relic.STARTSPANNUNG: "Pakete starten mit Wert 3 statt 1.",
 	Relic.BUSBREITE:     "+20% Gesamtschaden.",
-	Relic.DURCHBRUCH:    "Durchbruch-Bonus ×2 statt ×1,5.",
+	Relic.DURCHBRUCH:    "+10 Schaden pro geliefertem Paket.",
 	Relic.KUEHLPASTE:    "Hitze-Limit +4.",
 	Relic.EFFIZIENZ:     "Gesamtschaden +25%.",
 }
@@ -71,7 +71,8 @@ var stats = {
 	"components_placed": 0,
 	"components_bought": 0,
 	"packets_sent": 0,
-	"best_single_packet": 0
+	"best_single_packet": 0,
+	"overclocks": 0
 }
 
 
@@ -118,7 +119,7 @@ func start_new_run() -> void:
 	stats = {
 		"total_damage": 0, "firewalls_destroyed": 0,
 		"components_placed": 0, "components_bought": 0,
-		"packets_sent": 0, "best_single_packet": 0
+		"packets_sent": 0, "best_single_packet": 0, "overclocks": 0
 	}
 	inventory = Inventory.new()
 	# Start-Ausrüstung: ein paar Leiterbahnen, um den Weg günstig um Ecken zu biegen.
@@ -192,25 +193,29 @@ func effective_heat_limit() -> int:
 # anwendet.
 func compute_send() -> Dictionary:
 	var start_value := 3 if has_relic(Relic.STARTSPANNUNG) else 1
-	var break_mult := 2.0 if has_relic(Relic.DURCHBRUCH) else 1.5
 	var board_mult: float = board.get_board_multiplier()
 
 	var route: Dictionary = board.simulate_route(start_value)
 	var delivered: bool = route.get("delivered", false)
 	var value: int = int(route.get("value", 0))
 
+	# Grundschaden bei Lieferung = der SICHTBARE Paketwert (kein versteckter Bonus).
+	# Danach nur klar benannte Modifikatoren.
 	var raw := 0
 	if delivered:
-		raw = int(ceil(value * break_mult))
-		raw = int(raw * board_mult)
+		raw = value
+		if has_relic(Relic.DURCHBRUCH):                    # Durchbruch: +10 flach
+			raw += 10
+		if board_mult != 1.0:                              # Mainboards: +% Gesamt
+			raw = int(round(raw * board_mult))
+		if has_relic(Relic.EFFIZIENZ):
+			raw = int(round(raw * 1.25))
+		if has_relic(Relic.BUSBREITE):
+			raw = int(round(raw * 1.20))
 		if firewall and firewall.jammer_factor < 1.0:      # JAMMER: Signal gedämpft
-			raw = int(raw * firewall.jammer_factor)
+			raw = int(round(raw * firewall.jammer_factor))
 		if firewall and firewall.packet_damage_cap > 0:    # SHIELD: Deckel pro Treffer
 			raw = min(raw, firewall.packet_damage_cap)
-		if has_relic(Relic.EFFIZIENZ):
-			raw = int(raw * 1.25)
-		if has_relic(Relic.BUSBREITE):
-			raw = int(raw * 1.20)
 
 	# Überhitzung: steiler Malus, wenn Hitze über dem Limit liegt.
 	var heat: int = board.get_total_heat()
@@ -223,7 +228,8 @@ func compute_send() -> Dictionary:
 		penalty = clampf(1.0 - (1.0 - penalty) * (firewall.overheat_factor if firewall else 1.0), 0.10, 1.0)
 		total = int(raw * penalty)
 
-	total = int(total * (1.0 + overclock_dmg * 0.05))
+	if overclock_dmg > 0:
+		total = int(round(total * (1.0 + overclock_dmg * 0.05)))
 
 	return {
 		"path": route.get("path", []),
@@ -326,17 +332,51 @@ func reroll_shop() -> void:
 	_redraw_ui()
 
 
-# Verkauft ein Inventar-Item für die Hälfte des Basispreises (mind. 1).
+# Verkauft ein Inventar-Item für die Hälfte des Basispreises (+ Anteil für die
+# investierte Übertaktung), mindestens 1.
 func sell_item(index: int) -> void:
 	if inventory == null:
 		return
-	var t = inventory.peek_item(index)
-	if t == -1:
+	var b = inventory.peek_item(index)
+	if b == null:
 		return
-	var refund = max(1, int(Component.get_base_price(t) / 2.0))
+	var refund = max(1, int(Component.get_base_price(b.type) / 2.0)) + b.tier * 3
 	inventory.take_item(index)
 	money += refund
-	ui_message = "Verkauft: %s für %d Geld." % [Component.get_type_name(t), refund]
+	var tier_note = "" if b.tier == 0 else " (Stufe %d)" % b.tier
+	ui_message = "Verkauft: %s%s für %d Geld." % [Component.get_type_name(b.type), tier_note, refund]
+	_redraw_ui()
+
+
+# =============================================
+#  OVERCLOCK-WERKSTATT
+# =============================================
+
+# Wertet den Baustein an inventory[index] um eine Stufe auf – gegen teures Geld.
+func upgrade_block(index: int) -> void:
+	if phase != GamePhase.SHOP:
+		return
+	if inventory == null:
+		return
+	var b = inventory.peek_item(index)
+	if b == null:
+		return
+	var cost = Component.get_upgrade_cost(b.type, b.tier)
+	if cost < 0:
+		if not Component.is_upgradeable(b.type):
+			ui_message = "%s lässt sich nicht übertakten." % Component.get_type_name(b.type)
+		else:
+			ui_message = "%s ist bereits auf Maximalstufe %d." % [Component.get_type_name(b.type), Component.MAX_TIER]
+		_redraw_ui()
+		return
+	if money < cost:
+		ui_message = "Übertakten kostet %d Geld – du hast nur %d." % [cost, money]
+		_redraw_ui()
+		return
+	money -= cost
+	b.tier += 1
+	stats["overclocks"] = int(stats.get("overclocks", 0)) + 1
+	ui_message = "%s auf Stufe %d übertaktet (%s)." % [Component.get_type_name(b.type), b.tier, Component.get_label(b.type, b.tier)]
 	_redraw_ui()
 
 

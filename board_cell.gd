@@ -13,12 +13,13 @@ var c: int = -1
 var r: int = -1
 var has_block: bool = false
 var drag_type: int = -1  # Typ des platzierten Blocks (für die Drag-Vorschau)
+var drag_tier: int = 0   # Übertaktungsstufe des platzierten Blocks
 
 
 func _get_drag_data(_at_position: Vector2) -> Variant:
 	if not has_block:
 		return null
-	set_drag_preview(UIStyle.drag_preview(drag_type))
+	set_drag_preview(UIStyle.drag_preview(drag_type, drag_tier))
 	return {"kind": "board", "from_c": c, "from_r": r}
 
 
