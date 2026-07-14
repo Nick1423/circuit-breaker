@@ -3,16 +3,21 @@ extends Node2D
 # Component und Block sind über class_name global verfügbar – kein preload nötig.
 
 # Core Cocker - Spielfeld (Board)
-# 6x4-Raster. Jede Zelle enthält einen Block (fester Eingang links, Ausgang
-# rechts) oder null. Jede ZEILE ist eine eigene "Lane": liegt in Spalte 0 ein
-# Block, startet dort ein Paket und fließt nach rechts durch die lückenlose
-# Kette, bis eine Lücke oder der rechte Rand kommt (siehe simulate_lanes()).
+# 6 Spalten x 5 Zeilen. Jede Zelle enthält einen Block (nur Ausgang, drehbar) oder
+# null. Es gibt GENAU einen Eingang (linker Rand, mittlere Zeile) und einen
+# Ausgang (rechter Rand, mittlere Zeile). Ein einzelnes Paket startet am Eingang,
+# läuft nach Osten in die erste Zelle und folgt danach immer der Ausgangsrichtung
+# des Blocks in der aktuellen Zelle – bis es den Ausgang erreicht (Treffer), eine
+# leere Zelle/den Rand trifft (verloren) oder in eine Schleife läuft. Weil jede
+# Zelle nur einen Ausgang hat, ist der Weg eindeutig (siehe simulate_route()).
 
 # board[Zeile][Spalte] = Block oder null
 var board: Array = []
 
 const BOARD_WIDTH: int = 6
-const BOARD_HEIGHT: int = 4
+const BOARD_HEIGHT: int = 5
+# Mittlere Zeile (Ein-/Ausgang). Bei ungerader Höhe eindeutig -> Zeile 2.
+const MID_ROW: int = 2
 
 
 func _ready() -> void:
@@ -50,25 +55,53 @@ func get_component(col: int, row: int):
 
 # ---- Platzierung / Entfernung ----
 
-# Platziert einen Block eines Typs (Eingang links, Ausgang rechts – fest).
+# Platziert einen neuen Block eines Typs (Standard-Ausgang: Osten).
 # Gibt true bei Erfolg zurück.
-func place_component(col: int, row: int, type: int) -> bool:
+func place_component(col: int, row: int, type: int, dir: int = Block.Dir.EAST) -> bool:
 	if not _is_in_bounds(col, row):
 		push_warning("Platzierung außerhalb des Bretts: (%d,%d)" % [col, row])
 		return false
 	if board[row][col] != null:
 		return false
-	board[row][col] = Block.new(type)
+	board[row][col] = Block.new(type, dir)
 	return true
 
 
-# Tauscht die Blöcke zweier Felder (fürs Drag-Verschieben auf ein belegtes Feld).
+# Setzt eine EXISTIERENDE Block-Instanz ein (behält deren Ausgangsrichtung).
+# Für das Verschieben auf ein leeres Feld.
+func put_block(col: int, row: int, block) -> bool:
+	if not _is_in_bounds(col, row) or block == null or board[row][col] != null:
+		return false
+	board[row][col] = block
+	return true
+
+
+# Nimmt die Block-Instanz an (col,row) heraus und leert das Feld. Gibt sie zurück
+# (oder null). Behält Ausgangsrichtung – für Verschieben ohne Drehungsverlust.
+func take_block(col: int, row: int):
+	if not _is_in_bounds(col, row):
+		return null
+	var b = board[row][col]
+	board[row][col] = null
+	return b
+
+
+# Tauscht die Blöcke zweier Felder (Ausrichtung wandert mit).
 func swap_blocks(c1: int, r1: int, c2: int, r2: int) -> void:
 	if not _is_in_bounds(c1, r1) or not _is_in_bounds(c2, r2):
 		return
 	var tmp = board[r1][c1]
 	board[r1][c1] = board[r2][c2]
 	board[r2][c2] = tmp
+
+
+# Dreht den Ausgang des Blocks an (col,row) im Uhrzeigersinn. Gibt true bei Erfolg.
+func rotate_block(col: int, row: int) -> bool:
+	var b = get_block(col, row)
+	if b == null:
+		return false
+	b.rotate_cw()
+	return true
 
 
 # Entfernt den Block an (col,row). Gibt den entfernten Typ zurück oder -1.
@@ -135,60 +168,76 @@ func get_board_multiplier() -> float:
 	return 1.0 + count * Component.MAINBOARD_BONUS
 
 
-# ---- Paket-Routing: Lanes (jede Zeile fließt links -> rechts) ----
+# ---- Paket-Routing: EIN Paket folgt den Ausgangsrichtungen ----
 
-# Simuliert EINE Zeile als Lane. Ein Paket startet in Spalte 0 (falls dort ein
-# Block liegt) und läuft nach rechts durch die lückenlose Kette. Gibt {} zurück,
-# wenn die Zeile keinen Startblock in Spalte 0 hat (inaktive Lane).
+# Simuliert den kompletten Weg des Pakets. Es startet am Eingang (links, MID_ROW)
+# in Richtung Osten, betritt Zelle (0, MID_ROW) und folgt dann immer dem Ausgang
+# des jeweiligen Blocks. Ergebnis:
 # {
-#   "row": int,
 #   "value": int,           # aufgesammelter Endwert
-#   "path": Array,          # [{col,row,before,after,type}] für die Animation
-#   "reached_end": bool,    # Kette reicht bis zur letzten Spalte (Durchbruch)
-#   "stop_col": int,        # erste leere Spalte (oder BOARD_WIDTH)
+#   "path": Array,          # [{col,row,before,after,type,dir}] für die Animation
+#   "delivered": bool,      # Paket hat den Ausgang (rechts, MID_ROW) erreicht
+#   "reason": String,       # "delivered" | "empty" | "offgrid" | "loop"
+#   "end_col": int, "end_row": int,  # Zelle, aus der das Paket austritt/stoppt
 # }
-func simulate_lane(row: int, start_value: int = 1) -> Dictionary:
-	if get_block(0, row) == null:
-		return {}
-
+func simulate_route(start_value: int = 1) -> Dictionary:
+	var path: Array = []
 	var value := start_value
 	var col := 0
+	var row := MID_ROW
 	var prev_type := -1
-	var path: Array = []
+	var visited := {}
+	var delivered := false
+	var reason := "empty"
 
-	while col < BOARD_WIDTH and board[row][col] != null:
+	while true:
+		if not _is_in_bounds(col, row):
+			# Rechts über die mittlere Zeile hinaus -> am Ausgang angekommen.
+			if col == BOARD_WIDTH and row == MID_ROW:
+				delivered = true
+				reason = "delivered"
+			else:
+				reason = "offgrid"
+			break
+
+		var key := Vector2i(col, row)
+		if visited.has(key):
+			reason = "loop"
+			break
+
 		var b = board[row][col]
+		if b == null:
+			reason = "empty"
+			break
+
+		visited[key] = true
 		var before: int = value
-		var idx: int = path.size()  # Anzahl bereits durchlaufener Blöcke in DIESER Lane
+		var idx: int = path.size()  # Anzahl bereits durchlaufener Blöcke
 		match b.type:
 			Component.ComponentType.CACHE:
-				# Cache wiederholt den Effekt des vorherigen Blocks
+				# Cache wiederholt den Effekt des vorherigen Blocks im Pfad.
 				if prev_type != -1:
 					value = Component.process_packet(prev_type, value)
 			Component.ComponentType.RAM:
-				# RAM: +2 je bereits durchlaufenem Block
+				# RAM: +2 je bereits durchlaufenem Baustein.
 				value += 2 * idx
 			_:
 				value = Component.process_packet(b.type, value)
 		prev_type = b.type
-		path.append({"col": col, "row": row, "before": before, "after": value, "type": b.type})
-		col += 1
+		path.append({
+			"col": col, "row": row, "before": before, "after": value,
+			"type": b.type, "dir": b.out_dir,
+		})
+
+		var d := Block.dir_delta(b.out_dir)
+		col += d.x
+		row += d.y
 
 	return {
-		"row": row,
 		"value": value,
 		"path": path,
-		"reached_end": col == BOARD_WIDTH,  # bis über die letzte Spalte gelaufen -> Durchbruch
-		"stop_col": col,
+		"delivered": delivered,
+		"reason": reason,
+		"end_col": col,
+		"end_row": row,
 	}
-
-
-# Simuliert alle aktiven Lanes (Zeilen mit Startblock in Spalte 0).
-# Gibt ein Array von Lane-Dictionaries zurück (siehe simulate_lane).
-func simulate_all_lanes(start_value: int = 1) -> Array:
-	var lanes: Array = []
-	for row in range(BOARD_HEIGHT):
-		var lane := simulate_lane(row, start_value)
-		if not lane.is_empty():
-			lanes.append(lane)
-	return lanes

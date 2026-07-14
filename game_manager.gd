@@ -103,7 +103,7 @@ func show_homescreen() -> void:
 # =============================================
 
 func start_new_run() -> void:
-	money = 12
+	money = 10
 	score = 0
 	level = 0
 	round_in_level = 0
@@ -121,11 +121,11 @@ func start_new_run() -> void:
 		"packets_sent": 0, "best_single_packet": 0
 	}
 	inventory = Inventory.new()
-	# Start-Ausrüstung: 6 Leiterbahnen als Lückenfüller, um Lanes zu verlängern.
-	for _i in range(6):
+	# Start-Ausrüstung: ein paar Leiterbahnen, um den Weg günstig um Ecken zu biegen.
+	for _i in range(4):
 		inventory.add_item(Component.ComponentType.TRACE)
 	board.clear_board()
-	ui_message = "Zieh Bauteile ins Feld – jede volle Zeile ab Spalte 1 feuert ein Paket. Kaufe zuerst im Shop."
+	ui_message = "Route das Paket vom EINGANG (links Mitte) zum AUSGANG (rechts Mitte). Klicke einen Block, um seinen Ausgang zu drehen. Kaufe zuerst im Shop."
 	# Run beginnt im Shop: erst Bausteine kaufen, dann 'Weiter'.
 	start_shop_phase()
 
@@ -141,8 +141,8 @@ func start_level() -> void:
 	current_round += 1
 	firewall = Firewall.new(level)
 	phase = GamePhase.BUILD
-	money += 4 + level
-	ui_message = "Level %d — Runde 1/%d. Knacke die Firewall!" % [level, ROUNDS_PER_LEVEL]
+	money += 3
+	ui_message = "Level %d — Runde 1/%d. Route das Paket zum Ausgang und knacke die Firewall!" % [level, ROUNDS_PER_LEVEL]
 	_redraw_ui()
 
 
@@ -152,7 +152,7 @@ func next_round() -> void:
 	round_in_level += 1
 	current_round += 1
 	phase = GamePhase.BUILD
-	money += 3
+	money += 2
 	var last := round_in_level >= ROUNDS_PER_LEVEL
 	var warn := "   LETZTE RUNDE – sonst Game Over!" if last else ""
 	ui_message = "Level %d — Runde %d/%d.%s" % [level, round_in_level, ROUNDS_PER_LEVEL, warn]
@@ -184,52 +184,40 @@ func effective_heat_limit() -> int:
 	return limit
 
 
-# Berechnet den kompletten Sende-Vorgang OHNE Zustandsänderung. Summiert alle
-# aktiven Lanes (Zeilen mit Startblock in Spalte 0). Gibt ein Ergebnis-Dictionary
-# zurück, das die UI erst animiert und danach via apply_send() anwendet.
+# Berechnet den kompletten Sende-Vorgang OHNE Zustandsänderung. Ein einzelnes
+# Paket startet am Eingang (links, Mitte) und folgt den Ausgangsrichtungen der
+# Blöcke. Erreicht es den Ausgang (rechts, Mitte), zählt sein Wert als Schaden
+# (× Durchbruch-Bonus). Verfehlt es den Ausgang, gibt es keinen Schaden. Gibt ein
+# Ergebnis-Dictionary zurück, das die UI erst animiert und dann via apply_send()
+# anwendet.
 func compute_send() -> Dictionary:
 	var start_value := 3 if has_relic(Relic.STARTSPANNUNG) else 1
 	var break_mult := 2.0 if has_relic(Relic.DURCHBRUCH) else 1.5
 	var board_mult: float = board.get_board_multiplier()
-	var jammed: Array = firewall.jammer_rows(board) if firewall else []
 
-	var lane_results: Array = []
+	var route: Dictionary = board.simulate_route(start_value)
+	var delivered: bool = route.get("delivered", false)
+	var value: int = int(route.get("value", 0))
+
 	var raw := 0
-	var any_break := false
-
-	for row in range(board.BOARD_HEIGHT):
-		var lane: Dictionary = board.simulate_lane(row, start_value)
-		if lane.is_empty():
-			continue
-		var jammed_here: bool = row in jammed
-		var dmg := int(lane.value)
-		if lane.reached_end:
-			dmg = int(ceil(dmg * break_mult))
-			any_break = true
-		dmg = int(dmg * board_mult)
-		if firewall and firewall.packet_damage_cap > 0:  # SHIELD: Deckel je Lane
-			dmg = min(dmg, firewall.packet_damage_cap)
-		if jammed_here:
-			dmg = 0
-		else:
-			raw += dmg
-		lane_results.append({
-			"row": row, "damage": dmg, "path": lane.path,
-			"reached_end": lane.reached_end, "stop_col": lane.stop_col,
-			"jammed": jammed_here,
-		})
-
-	if has_relic(Relic.EFFIZIENZ):
-		raw = int(raw * 1.25)
-	if has_relic(Relic.BUSBREITE):
-		raw = int(raw * 1.20)
+	if delivered:
+		raw = int(ceil(value * break_mult))
+		raw = int(raw * board_mult)
+		if firewall and firewall.jammer_factor < 1.0:      # JAMMER: Signal gedämpft
+			raw = int(raw * firewall.jammer_factor)
+		if firewall and firewall.packet_damage_cap > 0:    # SHIELD: Deckel pro Treffer
+			raw = min(raw, firewall.packet_damage_cap)
+		if has_relic(Relic.EFFIZIENZ):
+			raw = int(raw * 1.25)
+		if has_relic(Relic.BUSBREITE):
+			raw = int(raw * 1.20)
 
 	# Überhitzung: steiler Malus, wenn Hitze über dem Limit liegt.
 	var heat: int = board.get_total_heat()
 	var hlimit := effective_heat_limit()
 	var overheated := heat > hlimit
 	var total := raw
-	if overheated:
+	if overheated and raw > 0:
 		var ratio := float(hlimit) / float(max(1, heat))
 		var penalty := clampf(pow(ratio, 1.5), 0.15, 1.0)
 		penalty = clampf(1.0 - (1.0 - penalty) * (firewall.overheat_factor if firewall else 1.0), 0.10, 1.0)
@@ -238,10 +226,14 @@ func compute_send() -> Dictionary:
 	total = int(total * (1.0 + overclock_dmg * 0.05))
 
 	return {
-		"lanes": lane_results,
-		"packets": _active_packet_count(lane_results),
+		"path": route.get("path", []),
+		"delivered": delivered,
+		"reason": route.get("reason", "empty"),
+		"end_col": int(route.get("end_col", 0)),
+		"end_row": int(route.get("end_row", 0)),
+		"value": value,
+		"packets": 1 if delivered else 0,
 		"raw": raw,
-		"reached_end": any_break,
 		"heat": heat,
 		"heat_limit": hlimit,
 		"overheated": overheated,
@@ -249,13 +241,13 @@ func compute_send() -> Dictionary:
 	}
 
 
-# Anzahl feuernder Lanes (nicht gestörte, aktive Zeilen).
-func _active_packet_count(lane_results: Array) -> int:
-	var n := 0
-	for lr in lane_results:
-		if not lr.jammed:
-			n += 1
-	return n
+# Kurztext, warum das Paket den Ausgang nicht erreicht hat.
+func reason_hint(reason: String) -> String:
+	match reason:
+		"empty":   return "Der Weg endet an einem leeren Feld."
+		"offgrid": return "Der Weg verlässt das Feld an der falschen Seite."
+		"loop":    return "Der Weg läuft im Kreis."
+		_:         return ""
 
 
 # Wendet ein zuvor berechnetes Sende-Ergebnis an: Schaden, Score, Phasenwechsel.
@@ -272,13 +264,14 @@ func apply_send(res: Dictionary) -> void:
 	score += total_damage
 	stats.total_damage += total_damage
 	stats.packets_sent += int(res.get("packets", 0))
-	for lr in res.get("lanes", []):
-		if int(lr.damage) > stats.best_single_packet:
-			stats.best_single_packet = int(lr.damage)
+	if total_damage > stats.best_single_packet:
+		stats.best_single_packet = total_damage
 
 	var note = ""
-	if res.get("reached_end", false):
+	if res.get("delivered", false):
 		note = "  (Durchbruch)"
+	else:
+		note = "  — Paket verfehlt den Ausgang: %s" % reason_hint(res.get("reason", ""))
 	if res.get("overheated", false):
 		note += "  (überhitzt!)"
 
@@ -313,7 +306,7 @@ func send_all_packets() -> void:
 
 func start_shop_phase() -> void:
 	phase = GamePhase.SHOP
-	reroll_cost = 2 + int(level / 2.0)
+	reroll_cost = 3 + int(level / 2.0)
 	shop.generate_offerings(level)
 	_redraw_ui()
 
@@ -405,6 +398,10 @@ func choose_reward(index: int) -> void:
 
 func buy_component(index: int) -> void:
 	if phase != GamePhase.SHOP:
+		return
+	if inventory.get_item_count() >= inventory.max_size:
+		ui_message = "Inventar voll – kein Platz für weitere Bauteile."
+		_redraw_ui()
 		return
 	var result = shop.buy(index, money)
 	if result.success:

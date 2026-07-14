@@ -15,6 +15,14 @@ const MOD_NAMES := {
 	Modifier.MELTDOWN: "Brandmelder",
 }
 
+const MOD_DESCS := {
+	Modifier.ARMORED:  "mehr HP",
+	Modifier.UNSTABLE: "niedrigeres Hitze-Limit",
+	Modifier.SHIELD:   "deckelt den Schaden pro Treffer",
+	Modifier.JAMMER:   "dämpft den gelieferten Schaden",
+	Modifier.MELTDOWN: "verschärft den Überhitzungs-Malus",
+}
+
 var level: int
 var health: int
 var max_health: int
@@ -24,8 +32,9 @@ var heat_limit: int
 # Modifikator-Zustand (von game_manager ausgewertet)
 var modifiers: Array = []          # Liste aktiver Modifier (int)
 var modifier_label: String = ""    # kombinierte Anzeige für die UI
-var packet_damage_cap: int = 0     # SHIELD: max. Schaden pro Lane (0 = kein Deckel)
+var packet_damage_cap: int = 0     # SHIELD: max. Schaden pro Treffer (0 = kein Deckel)
 var overheat_factor: float = 1.0   # MELTDOWN: verstärkt den Überhitzungs-Malus
+var jammer_factor: float = 1.0     # JAMMER: dämpft gelieferten Schaden (1.0 = keine Störung)
 
 
 # Unendliche HP-Kurve: früh sanft (+25%/Level), ab Level 10 zusätzlich versteilt.
@@ -38,7 +47,7 @@ static func firewall_hp(l: int) -> int:
 func _init(p_level: int) -> void:
 	level = p_level
 	max_health = firewall_hp(level)
-	reward_watt = 6 + level * 3
+	reward_watt = 5 + level * 2
 	heat_limit = 6 + level
 	_roll_modifiers()
 	health = max_health
@@ -91,30 +100,12 @@ func _apply_modifier(m: int) -> void:
 		Modifier.MELTDOWN:
 			overheat_factor = minf(3.5, 2.0 + 0.1 * (level - 3))
 		Modifier.JAMMER:
-			pass  # Wirkung erst in jammer_rows()
+			# Signalstörung: gelieferter Schaden wird gedämpft, mit dem Level stärker.
+			jammer_factor = clampf(0.7 - 0.015 * (level - 3), 0.45, 0.7)
 
 
 func has_modifier() -> bool:
 	return not modifiers.is_empty()
-
-
-# Welche Zeilen deaktiviert der Störsender? level<12: Zeile 0; level>=12: beste Lane.
-# Nie mehr als eine Zeile. board_ref = das Board (für simulate_lane).
-func jammer_rows(board_ref) -> Array:
-	if not (Modifier.JAMMER in modifiers):
-		return []
-	if level < 12:
-		return [0]
-	var best_row := -1
-	var best_val := -1
-	for row in range(board_ref.BOARD_HEIGHT):
-		var lane: Dictionary = board_ref.simulate_lane(row, 1)
-		if lane.is_empty():
-			continue
-		if int(lane.value) > best_val:
-			best_val = int(lane.value)
-			best_row = row
-	return [best_row] if best_row >= 0 else []
 
 
 # Fügt Schaden zu. Gibt true zurück, wenn die Firewall zerstört wurde.

@@ -73,7 +73,7 @@ const _LABELS := {
 }
 
 const _DESCRIPTIONS := {
-	ComponentType.TRACE:    "Leiterbahn: leitet das Paket ohne Änderung weiter. Wichtig, um den Weg bis zum rechten Rand zu bauen.",
+	ComponentType.TRACE:    "Leiterbahn: leitet das Paket ohne Änderung weiter und erzeugt keine Hitze. Ideal, um den Weg um die Ecke zum Ausgang zu biegen.",
 	ComponentType.CPU:      "CPU: addiert +5 auf den Paketwert.",
 	ComponentType.RAM:      "RAM: addiert +2 für jeden Baustein, den das Paket vorher schon durchlaufen hat. Stark am Ende langer Pfade.",
 	ComponentType.GPU:      "GPU: verdoppelt den Paketwert (×2). Am stärksten nach vielen Addierern.",
@@ -91,9 +91,9 @@ const _HEAT := {
 }
 
 const _PRICE := {
-	ComponentType.TRACE: 1, ComponentType.CPU: 4, ComponentType.RAM: 5,
-	ComponentType.GPU: 8, ComponentType.NPU: 6, ComponentType.CACHE: 6,
-	ComponentType.HEATSINK: 3, ComponentType.PSU: 7, ComponentType.MAINBOARD: 12,
+	ComponentType.TRACE: 1, ComponentType.CPU: 5, ComponentType.RAM: 7,
+	ComponentType.GPU: 11, ComponentType.NPU: 7, ComponentType.CACHE: 8,
+	ComponentType.HEATSINK: 4, ComponentType.PSU: 8, ComponentType.MAINBOARD: 15,
 }
 
 

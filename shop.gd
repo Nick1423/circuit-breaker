@@ -31,7 +31,7 @@ func generate_offerings(level: int) -> void:
 	offers.clear()
 
 	var count = randi() % (max_offers - min_offers + 1) + min_offers
-	price_multiplier = 1.0 + 0.08 * level  # L1:1.08  L5:1.4  L10:1.8  L20:2.6
+	price_multiplier = 1.0 + 0.06 * level  # L1:1.06  L5:1.3  L10:1.6  L20:2.2
 
 	for i in range(count):
 		var type = _get_random_component()

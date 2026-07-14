@@ -8,8 +8,8 @@ class_name Inventory
 # Inventar: Liste von ComponentType-Werten
 var items: Array = []
 
-# Maximale Inventar-Größe (Board hat 24 Felder)
-var max_size: int = 24
+# Maximale Inventar-Größe (Board hat 30 Felder)
+var max_size: int = 30
 
 
 # Fügt ein Bauteil zum Inventar hinzu (Typ als int / Component.ComponentType)
